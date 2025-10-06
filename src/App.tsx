@@ -1,8 +1,8 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import AuthPage from './pages/login/AuthPage';
-import Dashboard from './pages/common/dashboard';
-import Header from './components/header';
-import Footer from './components/footer';
+import Dashboard from './pages/common/DashBoard';
+import Header from './components/Header';
+import Footer from './components/Footer';
 
 /**
  * Main App Component
