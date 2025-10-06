@@ -1,0 +1,130 @@
+---
+alwaysApply: false
+---
+# === PROJECT OVERVIEW ===
+project_name: "Sideasy Scheduler"
+project_type: "Frontend-only React app using Firebase"
+project_stack:
+  framework: React + TypeScript + Vite
+  ui: TailwindCSS + MUI 
+  database: Firebase Firestore
+  auth: Firebase Authentication
+  hosting: Firebase Hosting (custom domain: sideasy.org)
+  version_control: GitHub
+
+# === GLOBAL RULES ===
+rules:
+  - Never generate or edit backend/server files. This project is frontend-only.
+  - Always ask before creating or moving files and clarify where you want to place the file.
+  - Always ask for confirmation before installing new packages or modifying Firebase configuration.
+  - Use TypeScript strict mode everywhere.
+  - All filenames and folders use lowerCamelCase.
+  - All date formats in UI and Firestore must be DD/MM/YYYY.
+  - Use only ES Modules import/export syntax.
+  - Never hardcode API keys — store Firebase config in .env.
+  - Use environment variables prefixed with `VITE_`.
+  - Test files that are not needed for production should be deleted.
+  - Code should be described properly and documented well for easy understanding.
+  - minimize code duplication, ask if code can be resused if necessary. 
+  - Do NOT do things that you were not asked to do, if you need to ask and explain exactly why you want to do something that you were not specifically asked to do. 
+  - Ensure to write code so that app will fucntion online and not only in localhost
+  - ALL text should be in hebrew 
+
+
+# === FIREBASE ===
+firebase:
+  - Use Firestore for all persistent data (workers, schedules, preferences, notifications).
+  - Use Firebase Auth for user management (developer,owner, admin, worker roles).
+  - Use Firebase Hosting for deployment — mapped to sideasy.org.
+  - Use Firestore real-time listeners for instant UI updates.
+  - All writes/reads must be wrapped in try/catch with proper error handling.
+  - Always confirm database structure matches required collections before deployment.
+
+firebase_collections:
+  
+
+# === SECURITY ===
+security:
+  - Never expose any private keys in code or GitHub.
+  - Use Firestore security rules to restrict access:
+      - developer: assign owners
+      - owner: see schedules, worker statistics, assign admins and workers
+      - admin: create schedules, update created schedules, see schedules, worker statistics, update worker data [qualifications, closing intervals, etc.]
+      - worker: see-only to schedules and notifications, assign prefrences for themselvs, see other workers' assigned prefrences, see their own statistics. 
+  - Validate user roles before displaying any protected route.
+  - Sanitize all text inputs before saving to Firestore.
+  - Always use HTTPS (Firebase handles this by default).
+  - Store sensitive or personal data encrypted in Firestore if necessary.
+
+# === DEPLOYMENT ===
+deployment:
+  - Use Firebase CLI for deploys: `firebase deploy --only hosting`
+  - Before deploying, always run:
+      - `npm run lint`
+      - `npm run build`
+      - `npm run preview`
+  - Ensure `.env` contains correct Firebase config for production.
+  - Custom domain (sideasy.org) must point to Firebase Hosting via A and TXT records.
+  - Always confirm build locally before live deploy.
+  - Store deployment logs under `/deployments`.
+
+# === VERSION CONTROL ===
+github:
+  - Always use branches for new features or bug fixes.
+  - Commit messages must follow format: `[scope]: short description`
+  - Never commit `.env` or Firebase credentials.
+  - Commit only clean, tested builds.
+  - Use `.gitignore` to exclude `node_modules`, `.env`, and `dist`.
+  - Keep a `CHANGELOG.md` documenting new features, patches, and hotfixes.
+
+# === FRONTEND STRUCTURE ===
+frontend_structure:
+  - /public: static assets (logos, icons, manifest)
+  - /src:
+      - /components: reusable UI (tables, modals, charts, cards)
+      - /pages: view-level pages (login, dashboard, schedule builder, etc.)
+      - /firebase: config, auth, firestore, storage, notifications
+      - /context: global React contexts (AuthContext, ScheduleContext)
+      - /hooks: custom hooks (useSchedules, useWorkerPrefs, useNotifications)
+      - /utils: helpers (generateSchedule, calculateStats, formatDate, exportPDF)
+      - App.tsx: routing + layout
+      - main.tsx: ReactDOM entry
+      - index.css: global styles
+  - Never mix UI and data logic — all Firestore operations go in `/firebase`.
+
+# === TESTING ===
+testing:
+  - Use Firebase Emulator Suite for local Firestore/Auth testing.
+  - Always test Firestore reads/writes using emulators before deploying.
+  - Run `npm run preview` to verify UI and routing locally.
+  - All routes and role-based content must be manually tested before deployment.
+  - Check that all data displayed matches Firestore schema.
+
+# === DATA INTEGRITY ===
+data_integrity:
+  - Every Firestore document must include:
+      - `createdAt` (timestamp)
+      - `updatedAt` (timestamp)
+      - `createdBy` (user ID or email)
+  - Use Firestore’s `serverTimestamp()` for consistent time.
+  - Use Firestore batch writes or transactions for multi-step updates.
+  - No schedule may be overwritten without user confirmation.
+  - All schedule exports (PDF/CSV) must include metadata (author + timestamp).
+
+# === UI/UX ===
+ui:
+  - Must be responsive for desktop, tablet, and mobile.
+  - Use TailwindCSS for layout and spacing.
+  - Use shadcn/ui for cards, buttons, modals.
+  - Use react-router-dom for navigation.
+  - Show loading and success states for all Firestore actions.
+  - Display toast notifications for all updates, saves, or errors.
+
+# === MISC ===
+misc:
+  - Timezone: Asia/Jerusalem (UTC+3)
+  - Always ask before deleting files or data.
+  - Keep `/docs` folder updated with Firebase setup, architecture, and schema.
+  - Keep all comments concise and technical (no chatter).
+  - Cursor must confirm all file placements before writing.
+  - Cursor must maintain compatibility with Firebase updates and react-router-dom.
