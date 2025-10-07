@@ -1,5 +1,5 @@
 ---
-alwaysApply: false
+alwaysApply: true
 ---
 # === PROJECT OVERVIEW ===
 project_name: "Sideasy Scheduler"
@@ -29,6 +29,7 @@ rules:
   - Do NOT do things that you were not asked to do, if you need to ask and explain exactly why you want to do something that you were not specifically asked to do. 
   - Ensure to write code so that app will fucntion online and not only in localhost
   - ALL text should be in hebrew 
+  - look up FILE_STRUCTURE.txt and add files in correct and logoical files.
 
 
 # === FIREBASE ===
@@ -41,6 +42,32 @@ firebase:
   - Always confirm database structure matches required collections before deployment.
 
 firebase_collections:
+  users:
+    - Global collection for all users
+    - Fields: userId, email, firstName, lastName, role, departmentId, status, emailVerified
+    - status: pending|approved|rejected
+    - role: developer|owner|admin|worker
+  
+  departments:
+    - Global collection for all departments
+    - Fields: departmentId, name, type, ownerId, adminCount, workerCount
+    - type: predefined|custom
+  
+  "{departmentId}/workers":
+    - Department-specific worker data
+    - Isolated per department
+  
+  "{departmentId}/schedules":
+    - Department-specific schedules
+    - Isolated per department
+  
+  "{departmentId}/tasks":
+    - Department-specific task templates
+    - Isolated per department
+  
+  "{departmentId}/statistics":
+    - Department-specific statistics
+    - Isolated per department
   
 
 # === SECURITY ===
