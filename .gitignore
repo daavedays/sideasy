@@ -48,7 +48,25 @@ coverage/
 .firebase/
 firebase-debug.log
 firestore-debug.log
+serviceAccountKey.json
+
+# Documentation (contains sensitive setup info)
+docs/
+
+# Scripts folder (may contain sensitive data)
+scripts/
 
 # Temporary folders
 tmp/
 temp/
+
+
+#cursor rules
+.cursor/
+*.mdc
+*.mdc
+/.cursor/rules
+/.cursor
+
+.cursor/rules/always-read-rules.mdc
+.DS_Store

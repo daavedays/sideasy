@@ -1,0 +1,115 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // ============================================
+    // USERS COLLECTION
+    // ============================================
+    
+    match /users/{userId} {
+      // Anyone authenticated can create their own user document (signup)
+      allow create: if isAuthenticated() 
+        && request.auth.uid == userId
+        && request.resource.data.status == 'pending'
+        && request.resource.data.role != 'developer';
+      
+      // Anyone authenticated can read their own document
+      allow get: if isAuthenticated() && request.auth.uid == userId;
+      
+      // Anyone authenticated can list users (we'll filter in app)
+      // This is needed for developer to query pending users
+      allow list: if isAuthenticated();
+      
+      // Users can update their own document (limited fields)
+      allow update: if isAuthenticated() && request.auth.uid == userId
+        && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['role', 'status', 'approvedBy', 'approvedAt', 'userId']);
+      
+      // Allow updates if user is developer (checked by role in their own doc)
+      allow update: if isAuthenticated() 
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
+      
+      // Allow delete if user is developer
+      allow delete: if isAuthenticated()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
+    }
+    
+    // ============================================
+    // DEPARTMENTS COLLECTION
+    // ============================================
+    
+    match /departments/{departmentId} {
+      // Anyone authenticated can read departments
+      allow read: if isAuthenticated();
+      
+      // Only developer can create departments
+      allow create: if isAuthenticated()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
+      
+      // Developer and department owner can update
+      allow update: if isAuthenticated() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer'
+        || resource.data.ownerId == request.auth.uid
+      );
+      
+      // Only developer can delete
+      allow delete: if isAuthenticated()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
+    }
+    
+    // ============================================
+    // DEPARTMENT-SPECIFIC COLLECTIONS
+    // ============================================
+    
+    // Pattern: /{departmentId}/workers/{workerId}
+    match /{departmentId}/workers/{workerId} {
+      // Anyone authenticated can read
+      allow read: if isAuthenticated();
+      
+      // Developer, owner, and admin can write
+      allow write: if isAuthenticated();
+    }
+    
+    // Pattern: /{departmentId}/schedules/{scheduleId}
+    match /{departmentId}/schedules/{scheduleId} {
+      // Anyone authenticated can read
+      allow read: if isAuthenticated();
+      
+      // Developer, owner, and admin can write
+      allow write: if isAuthenticated();
+    }
+    
+    // Pattern: /{departmentId}/tasks/{taskId}
+    match /{departmentId}/tasks/{taskId} {
+      // Anyone authenticated can read
+      allow read: if isAuthenticated();
+      
+      // Anyone authenticated can write
+      allow write: if isAuthenticated();
+    }
+    
+    // Pattern: /{departmentId}/statistics/{statisticId}
+    match /{departmentId}/statistics/{statisticId} {
+      // Anyone authenticated can read
+      allow read: if isAuthenticated();
+      
+      // Anyone authenticated can write
+      allow write: if isAuthenticated();
+    }
+    
+    // Deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

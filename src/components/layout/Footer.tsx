@@ -7,7 +7,7 @@ import React from 'react';
  * Features Hebrew text with RTL support and glassmorphism design.
  * Only shows on non-authentication pages.
  * 
- * Location: src/components/footer.tsx
+ * Location: src/components/layout/Footer.tsx
  * Purpose: Main footer for the application
  */
 
@@ -17,52 +17,19 @@ const Footer: React.FC = () => {
   return (
     <footer className="bg-white/10 backdrop-blur-md border-t border-white/20 mt-auto">
       <div className="container mx-auto px-4 py-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           {/* Brand Section */}
-          <div className="text-center md:text-right">
+          <div className="text-left md:text-left px-20 py-5">
             <h3 className="text-2xl font-bold text-white mb-4 drop-shadow-lg">
               Sideasy
             </h3>
             <p className="text-white/80 text-sm leading-relaxed">
               מערכת ניהול משמרות מתקדמת
-              <br />
-              סידור עבודה בקליק
+              <br /> 
             </p>
           </div>
-
-          {/* Quick Links */}
-          <div className="text-center">
-            <h4 className="text-white font-semibold mb-4">קישורים מהירים</h4>
-            <div className="flex flex-col space-y-2">
-              <a 
-                href="/dashboard" 
-                className="text-white/70 hover:text-white transition-colors duration-200 text-sm"
-              >
-                דשבורד
-              </a>
-              <a 
-                href="#" 
-                className="text-white/70 hover:text-white transition-colors duration-200 text-sm"
-              >
-                משמרות
-              </a>
-              <a 
-                href="#" 
-                className="text-white/70 hover:text-white transition-colors duration-200 text-sm"
-              >
-                עובדים
-              </a>
-              <a 
-                href="#" 
-                className="text-white/70 hover:text-white transition-colors duration-200 text-sm"
-              >
-                הגדרות
-              </a>
-            </div>
-          </div>
-
           {/* Contact Info */}
-          <div className="text-center md:text-left">
+          <div className="text-right md:text-right px-20 py-5">
             <h4 className="text-white font-semibold mb-4">יצירת קשר</h4>
             <div className="space-y-2 text-sm text-white/70">
               <p>תמיכה טכנית זמינה 24/7</p>
@@ -78,7 +45,7 @@ const Footer: React.FC = () => {
             {/* Copyright */}
             <div className="text-center md:text-right">
               <p className="text-white/70 text-sm">
-                © {currentYear} Sideasy. כל הזכויות שמורות.
+                | © {currentYear} Sideasy | כל הזכויות שמורות
               </p>
             </div>
 
@@ -130,3 +97,4 @@ const Footer: React.FC = () => {
 };
 
 export default Footer;
+

@@ -6,7 +6,7 @@ import React from 'react';
  * Reusable background component with image slideshow and gradient overlay.
  * Features smooth transitions between images with opacity and blur effects.
  * 
- * Location: src/components/Background.tsx
+ * Location: src/components/layout/Background.tsx
  * Purpose: Reusable background for pages
  */
 
@@ -74,3 +74,4 @@ const Background: React.FC<BackgroundProps> = ({
 };
 
 export default Background;
+

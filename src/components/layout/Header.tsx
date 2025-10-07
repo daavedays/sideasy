@@ -1,5 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { signOut } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '../../config/firebase';
 
 /**
  * Header Component
@@ -8,33 +11,85 @@ import { useNavigate, useLocation } from 'react-router-dom';
  * Features Hebrew text with RTL support and glassmorphism design.
  * Only shows on non-authentication pages.
  * 
- * Location: src/components/header.tsx
+ * Location: src/components/layout/Header.tsx
  * Purpose: Main navigation header for the application
  */
+
+interface UserData {
+  firstName?: string;
+  lastName?: string;
+  role?: string;
+}
 
 const Header: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const [userData, setUserData] = useState<UserData | null>(null);
 
   // Don't show header on login/auth pages
   const isAuthPage = location.pathname === '/' || location.pathname === '/login';
   
+  useEffect(() => {
+    const fetchUserData = async () => {
+      if (auth.currentUser && !isAuthPage) {
+        try {
+          const userDocRef = doc(db, 'users', auth.currentUser.uid);
+          const userDocSnap = await getDoc(userDocRef);
+          if (userDocSnap.exists()) {
+            setUserData(userDocSnap.data() as UserData);
+          }
+        } catch (error) {
+          console.error('Error fetching user data:', error);
+        }
+      }
+    };
+
+    fetchUserData();
+  }, [isAuthPage]);
+
   if (isAuthPage) {
     return null;
   }
 
-  const handleLogout = () => {
-    // TODO: Implement actual logout functionality
-    navigate('/login');
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      navigate('/login');
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
   };
 
   const handleDashboardClick = () => {
-    navigate('/dashboard');
+    // Navigate based on role
+    if (userData?.role === 'developer') {
+      navigate('/developer');
+    } else if (userData?.role === 'owner') {
+      navigate('/owner');
+    } else if (userData?.role === 'admin') {
+      navigate('/admin');
+    } else if (userData?.role === 'worker') {
+      navigate('/worker');
+    }
+  };
+
+  const getInitials = () => {
+    if (userData?.firstName) {
+      return userData.firstName.charAt(0);
+    }
+    return 'U';
+  };
+
+  const getUserDisplayName = () => {
+    if (userData?.firstName && userData?.lastName) {
+      return `${userData.firstName} ${userData.lastName}`;
+    }
+    return userData?.firstName || 'משתמש';
   };
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-white/10 backdrop-blur-md border-b border-white/20 shadow-lg">
-      <div className="container mx-auto px-4 py-4">
+      <div className="container mx-auto px-4 py-0">
         <div className="flex items-center justify-between">
           {/* Logo/Brand */}
           <div className="flex items-center space-x-4 space-x-reverse">
@@ -88,14 +143,14 @@ const Header: React.FC = () => {
 
             {/* Profile Menu */}
             <div className="relative">
-              <button className="flex items-center space-x-2 space-x-reverse text-white/90 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg transition-all duration-200">
+              <button 
+                onClick={handleDashboardClick}
+                className="flex items-center space-x-2 space-x-reverse text-white/90 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg transition-all duration-200"
+              >
                 <div className="w-8 h-8 bg-gradient-to-r from-purple-500 to-blue-500 rounded-full flex items-center justify-center">
-                  <span className="text-white font-semibold text-sm">ד</span>
+                  <span className="text-white font-semibold text-sm">{getInitials()}</span>
                 </div>
-                <span className="hidden md:block font-medium">דוד מירזויאן</span>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
+                <span className="hidden md:block font-medium">{getUserDisplayName()}</span>
               </button>
             </div>
 
@@ -121,3 +176,4 @@ const Header: React.FC = () => {
 };
 
 export default Header;
+
