@@ -8,7 +8,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../../config/firebase';
 import { UserData } from '../../lib/auth/authHelpers';
 import Background from '../../components/layout/Background';
@@ -24,8 +25,10 @@ interface DepartmentData {
 }
 
 const OwnerDash: React.FC = () => {
+  const navigate = useNavigate();
   const [userData, setUserData] = useState<UserData | null>(null);
   const [departmentData, setDepartmentData] = useState<DepartmentData | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -61,25 +64,51 @@ const OwnerDash: React.FC = () => {
     fetchData();
   }, []);
 
+  // Real-time listener for pending approvals (admins and workers for this department)
+  useEffect(() => {
+    if (!userData?.departmentId) return;
+
+    const q = query(
+      collection(db, 'users'),
+      where('status', '==', 'pending'),
+      where('departmentId', '==', userData.departmentId)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      // Count only admins and workers (not owners)
+      const count = snapshot.docs.filter(doc => {
+        const user = doc.data() as UserData;
+        return user.role === 'admin' || user.role === 'worker';
+      }).length;
+      
+      setPendingCount(count);
+    }, (error) => {
+      console.error('Error fetching pending users:', error);
+    });
+
+    return () => unsubscribe();
+  }, [userData?.departmentId]);
+
   const navigationCards = [
+    {
+      title: 'בקשות ממתינות לאישור',
+      description: 'אשר או דחה מנהלים ועובדים חדשים',
+      icon: '✋',
+      badge: pendingCount > 0 ? `${pendingCount}` : null,
+      onClick: () => navigate('/owner/pending-approvals'),
+      color: 'from-purple-600 to-pink-600'
+    },
     {
       title: 'ניהול עובדים',
       description: 'הוסף, ערוך וצפה בעובדי המחלקה',
       icon: '👥',
       onClick: () => alert('בקרוב!'),
-      color: 'from-purple-600 to-blue-600'
-    },
-    {
-      title: 'יצירת סידור',
-      description: 'צור סידור עבודה חדש למחלקה',
-      icon: '📅',
-      onClick: () => alert('בקרוב!'),
       color: 'from-blue-600 to-cyan-600'
     },
     {
-      title: 'סידורים קיימים',
-      description: 'צפה וערוך סידורים קיימים',
-      icon: '📋',
+      title: 'הגדרות',
+      description: 'נהל הגדרות מחלקה וחשבון',
+      icon: '⚙️',
       onClick: () => alert('בקרוב!'),
       color: 'from-cyan-600 to-green-600'
     },
@@ -158,6 +187,13 @@ const OwnerDash: React.FC = () => {
                   onClick={card.onClick}
                   className="relative bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-white/20 hover:bg-white/15 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-right group"
                 >
+                  {/* Badge */}
+                  {card.badge && (
+                    <div className="absolute top-4 left-4 bg-red-500 text-white text-sm font-bold rounded-full w-8 h-8 flex items-center justify-center shadow-lg">
+                      {card.badge}
+                    </div>
+                  )}
+
                   {/* Icon */}
                   <div className="text-6xl mb-4 group-hover:scale-110 transition-transform">
                     {card.icon}

@@ -1,57 +1,76 @@
 /**
- * Pending Approvals Page
+ * Owner Pending Approvals Page
  * 
- * Displays all pending users and allows developer to approve/reject them.
+ * Displays pending admins and workers for the owner's department
+ * and allows owner to approve/reject them.
  * 
- * Location: src/pages/developer/PendingApprovals.tsx
- * Purpose: User approval management
+ * Location: src/pages/owner/OwnerPendingApprovals.tsx
+ * Purpose: Department-specific user approval management
  */
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
+import { collection, query, where, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
 import { UserData } from '../../lib/auth/authHelpers';
 import { approveUser, rejectUser } from '../../lib/auth/approvalHelpers';
 import Background from '../../components/layout/Background';
 import { useNavigate } from 'react-router-dom';
 
-type FilterRole = 'all' | 'owner' | 'admin' | 'worker';
+type FilterRole = 'all' | 'admin' | 'worker';
 
-const PendingApprovals: React.FC = () => {
+const OwnerPendingApprovals: React.FC = () => {
   const navigate = useNavigate();
   const [pendingUsers, setPendingUsers] = useState<UserData[]>([]);
   const [filteredUsers, setFilteredUsers] = useState<UserData[]>([]);
-  const [filter, setFilter] = useState<FilterRole>('owner');
+  const [filter, setFilter] = useState<FilterRole>('all');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [ownerDepartmentId, setOwnerDepartmentId] = useState<string | null>(null);
 
-  // Real-time listener for pending users
+  // Get owner's department ID
   useEffect(() => {
+    const fetchOwnerDepartment = async () => {
+      if (!auth.currentUser) return;
+
+      try {
+        const userDocRef = doc(db, 'users', auth.currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (userDoc.exists()) {
+          const userData = userDoc.data() as UserData;
+          setOwnerDepartmentId(userData.departmentId || null);
+        }
+      } catch (error) {
+        console.error('Error fetching owner data:', error);
+      }
+    };
+
+    fetchOwnerDepartment();
+  }, []);
+
+  // Real-time listener for pending users in owner's department
+  useEffect(() => {
+    if (!ownerDepartmentId) return;
+
     const q = query(
       collection(db, 'users'),
-      where('status', '==', 'pending')
+      where('status', '==', 'pending'),
+      where('departmentId', '==', ownerDepartmentId)
     );
 
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
+    const unsubscribe = onSnapshot(q, (snapshot) => {
       const users: UserData[] = [];
       
-      // Get all pending users (don't filter by emailVerified yet)
       snapshot.forEach((doc) => {
         const userData = doc.data() as UserData;
-        users.push(userData);
+        // Only show admins and workers (not owners)
+        if (userData.role === 'admin' || userData.role === 'worker') {
+          users.push(userData);
+        }
       });
       
-      // Check Firebase Auth directly for email verification status
-      // This is necessary because emailVerified in Firestore only syncs on login,
-      // but users can't log in until approved (catch-22)
-      const adminAuth = getAuth();
-      
-      // For now, show ALL pending users
-      // The emailVerified badge will show verification status
-      
-      // Sort by createdAt manually
+      // Sort by createdAt
       users.sort((a, b) => {
         const timeA = a.createdAt?.toMillis?.() || 0;
         const timeB = b.createdAt?.toMillis?.() || 0;
@@ -62,7 +81,6 @@ const PendingApprovals: React.FC = () => {
       setLoading(false);
     }, (error) => {
       console.error('Error fetching pending users:', error);
-      // Show error but don't crash
       setMessage({ 
         type: 'error', 
         text: 'שגיאה בטעינת משתמשים. אנא רענן את הדף.' 
@@ -71,7 +89,7 @@ const PendingApprovals: React.FC = () => {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [ownerDepartmentId]);
 
   // Filter users by role
   useEffect(() => {
@@ -122,7 +140,6 @@ const PendingApprovals: React.FC = () => {
 
   const getRoleInHebrew = (role: string) => {
     switch (role) {
-      case 'owner': return 'בעל/ת מחלקה';
       case 'admin': return 'מנהל/ת';
       case 'worker': return 'עובד/ת';
       default: return role;
@@ -132,7 +149,6 @@ const PendingApprovals: React.FC = () => {
   const getFilterCounts = () => {
     return {
       all: pendingUsers.length,
-      owner: pendingUsers.filter(u => u.role === 'owner').length,
       admin: pendingUsers.filter(u => u.role === 'admin').length,
       worker: pendingUsers.filter(u => u.role === 'worker').length
     };
@@ -149,7 +165,7 @@ const PendingApprovals: React.FC = () => {
           {/* Header */}
           <div className="mb-8">
             <button
-              onClick={() => navigate('/developer')}
+              onClick={() => navigate('/owner')}
               className="text-white/80 hover:text-white mb-4 flex items-center gap-2"
             >
               ← חזרה למסך הראשי
@@ -158,7 +174,7 @@ const PendingApprovals: React.FC = () => {
               ממתינים לאישור
             </h1>
             <p className="text-white/80 mt-2">
-              כל המשתמשים הממתינים לאישור. ניתן לאשר רק משתמשים שאימתו את האימייל.
+              מנהלים ועובדים הממתינים לאישור עבור המחלקה שלך. ניתן לאשר רק משתמשים שאימתו את האימייל.
             </p>
             <p className="text-white/60 mt-1 text-sm">
               💡 טיפ: סטטוס האימות מתעדכן אוטומטית כאשר משתמשים מנסים להתחבר לאחר אימות האימייל
@@ -187,16 +203,6 @@ const PendingApprovals: React.FC = () => {
               }`}
             >
               הכל ({counts.all})
-            </button>
-            <button
-              onClick={() => setFilter('owner')}
-              className={`px-6 py-3 rounded-xl font-medium transition-all ${
-                filter === 'owner'
-                  ? 'bg-white/20 text-white shadow-lg'
-                  : 'text-white/70 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              בעלים ({counts.owner})
             </button>
             <button
               onClick={() => setFilter('admin')}
@@ -230,7 +236,7 @@ const PendingApprovals: React.FC = () => {
               <div className="p-12 text-center text-white">
                 <p className="text-xl">אין משתמשים ממתינים לאישור</p>
                 <p className="text-white/70 mt-2">
-                  משתמשים יופיעו כאן לאחר שיאמתו את האימייל שלהם
+                  משתמשים יופיעו כאן לאחר שירשמו למחלקה שלך ויאמתו את האימייל
                 </p>
               </div>
             ) : (
@@ -242,7 +248,6 @@ const PendingApprovals: React.FC = () => {
                       <th className="px-6 py-4 text-right text-white font-semibold">אימייל</th>
                       <th className="px-6 py-4 text-right text-white font-semibold">סטטוס אימות</th>
                       <th className="px-6 py-4 text-right text-white font-semibold">תפקיד</th>
-                      <th className="px-6 py-4 text-right text-white font-semibold">מחלקה</th>
                       <th className="px-6 py-4 text-right text-white font-semibold">תאריך</th>
                       <th className="px-6 py-4 text-center text-white font-semibold">פעולות</th>
                     </tr>
@@ -269,12 +274,6 @@ const PendingApprovals: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 text-white">
                           {getRoleInHebrew(user.role)}
-                        </td>
-                        <td className="px-6 py-4 text-white">
-                          {user.departmentName}
-                          {user.customDepartmentName && (
-                            <span className="text-yellow-400 text-sm mr-2">(חדש)</span>
-                          )}
                         </td>
                         <td className="px-6 py-4 text-white/70 text-sm">
                           {user.createdAt?.toDate?.()?.toLocaleDateString('he-IL') || 'N/A'}
@@ -311,5 +310,4 @@ const PendingApprovals: React.FC = () => {
   );
 };
 
-export default PendingApprovals;
-
+export default OwnerPendingApprovals;

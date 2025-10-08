@@ -103,7 +103,7 @@ export async function signUp(
 
     return {
       success: true,
-      message: 'תודה על ההרשמה! אנא אמת את האימייל שלך ולאחר מכן המתן לאישור מנהל.',
+      message: 'תודה על ההרשמה! שלב הבא:\n1️⃣ בדוק את האימייל שלך ולחץ על קישור האימות\n2️⃣ חזור לכאן ונסה להתחבר (כדי לעדכן את הסטטוס)\n3️⃣ המתן לאישור מנהל המערכת',
       userId: user.uid
     };
 
@@ -171,7 +171,22 @@ export async function signIn(
 
     const userData = userDoc.data() as UserData;
 
-    // Step 3: Check if email is verified
+    // Step 3: Sync emailVerified from Firebase Auth to Firestore
+    // Firebase Auth updates emailVerified when user clicks verification link
+    // We need to sync this to Firestore database
+    if (user.emailVerified && !userData.emailVerified) {
+      await setDoc(userDocRef, {
+        emailVerified: true,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      
+      // Update local userData object
+      userData.emailVerified = true;
+      
+      console.log('✅ Email verification synced to Firestore');
+    }
+
+    // Step 4: Check if email is verified
     if (!user.emailVerified && userData.role !== 'developer') {
       await firebaseSignOut(auth);
       return {
@@ -181,12 +196,12 @@ export async function signIn(
       };
     }
 
-    // Step 4: Check user status
+    // Step 5: Check user status
     if (userData.status === 'pending') {
       await firebaseSignOut(auth);
       return {
         success: false,
-        message: 'חשבונך ממתין לאישור מנהל. תקבל מייל כאשר החשבון יאושר.',
+        message: '✅ האימייל שלך אומת בהצלחה!\n⏳ חשבונך ממתין לאישור מנהל המערכת.\n📧 תקבל הודעה כאשר החשבון יאושר.',
         needsApproval: true
       };
     }
@@ -199,7 +214,7 @@ export async function signIn(
       };
     }
 
-    // Step 5: Success - user is approved
+    // Step 6: Success - user is approved
     return {
       success: true,
       message: 'התחברת בהצלחה!',
@@ -211,7 +226,9 @@ export async function signIn(
     console.error('Login error:', error);
     
     // Handle specific errors
-    if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+    if (error.code === 'auth/user-not-found' || 
+        error.code === 'auth/wrong-password' ||
+        error.code === 'auth/invalid-credential') {
       return {
         success: false,
         message: 'אימייל או סיסמה שגויים'

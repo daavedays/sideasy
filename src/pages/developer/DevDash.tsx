@@ -20,12 +20,11 @@ const DevDash: React.FC = () => {
   const [userName, setUserName] = useState('Developer');
 
   useEffect(() => {
-    // Get pending users count
+    // Get pending users count (includes all pending, verified and unverified)
     const fetchPendingCount = async () => {
       const q = query(
         collection(db, 'users'),
-        where('status', '==', 'pending'),
-        where('emailVerified', '==', true)
+        where('status', '==', 'pending')
       );
       const snapshot = await getDocs(q);
       setPendingCount(snapshot.size);

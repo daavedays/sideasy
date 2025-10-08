@@ -11,8 +11,10 @@ import {
   doc, 
   updateDoc, 
   setDoc,
+  getDoc,
   collection,
-  serverTimestamp
+  serverTimestamp,
+  increment
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { UserData } from './authHelpers';
@@ -65,15 +67,55 @@ export async function approveUser(
         departmentName: userData.customDepartmentName
       });
     } 
-    // Step 3: If owner of predefined department, update department ownerId
+    // Step 3: If owner of predefined department, update/create department
     else if (userData.role === 'owner' && userData.departmentId) {
       const departmentRef = doc(db, 'departments', userData.departmentId);
-      await updateDoc(departmentRef, {
+      
+      // Check if department exists first
+      const departmentSnap = await getDoc(departmentRef);
+      const isNewDepartment = !departmentSnap.exists();
+      
+      // Build department data
+      const departmentData: any = {
+        departmentId: userData.departmentId,
+        name: userData.departmentName,
+        type: 'predefined',
         ownerId: userId,
         ownerName: `${userData.firstName} ${userData.lastName}`,
         ownerEmail: userData.email,
+        adminCount: 0,
+        workerCount: 0,
         updatedAt: serverTimestamp()
-      });
+      };
+      
+      // Add createdAt only for new departments
+      if (isNewDepartment) {
+        departmentData.createdAt = serverTimestamp();
+      }
+      
+      // Use setDoc with merge to create or update
+      await setDoc(departmentRef, departmentData, { merge: true });
+    }
+    // Step 4: If admin or worker, increment department counts
+    else if ((userData.role === 'admin' || userData.role === 'worker') && userData.departmentId) {
+      const departmentRef = doc(db, 'departments', userData.departmentId);
+      
+      // Check if department exists
+      const departmentSnap = await getDoc(departmentRef);
+      if (departmentSnap.exists()) {
+        // Increment the appropriate count
+        const updateData: any = {
+          updatedAt: serverTimestamp()
+        };
+        
+        if (userData.role === 'admin') {
+          updateData.adminCount = increment(1);
+        } else if (userData.role === 'worker') {
+          updateData.workerCount = increment(1);
+        }
+        
+        await updateDoc(departmentRef, updateData);
+      }
     }
 
     return {
