@@ -37,66 +37,61 @@ export async function approveUser(
       updatedAt: serverTimestamp()
     });
 
-    // Step 2: Handle custom department creation
+    // Step 2: Handle department logic based on role
     let finalDepartmentId = userData.departmentId;
     
-    if (!userData.departmentId && userData.customDepartmentName && userData.role === 'owner') {
-      // Create new custom department
-      const departmentRef = doc(collection(db, 'departments'));
-      finalDepartmentId = departmentRef.id;
-      
-      const departmentData = {
-        departmentId: finalDepartmentId,
-        name: userData.customDepartmentName,
-        type: 'custom',
-        ownerId: userId,
-        ownerName: `${userData.firstName} ${userData.lastName}`,
-        ownerEmail: userData.email,
-        adminCount: 0,
-        workerCount: 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        createdBy: approverId
-      };
-      
-      await setDoc(departmentRef, departmentData);
-      
-      // Update user with the new department ID
-      await updateDoc(userRef, {
-        departmentId: finalDepartmentId,
-        departmentName: userData.customDepartmentName
-      });
-    } 
-    // Step 3: If owner of predefined department, update/create department
-    else if (userData.role === 'owner' && userData.departmentId) {
-      const departmentRef = doc(db, 'departments', userData.departmentId);
-      
-      // Check if department exists first
-      const departmentSnap = await getDoc(departmentRef);
-      const isNewDepartment = !departmentSnap.exists();
-      
-      // Build department data
-      const departmentData: any = {
-        departmentId: userData.departmentId,
-        name: userData.departmentName,
-        type: 'predefined',
-        ownerId: userId,
-        ownerName: `${userData.firstName} ${userData.lastName}`,
-        ownerEmail: userData.email,
-        adminCount: 0,
-        workerCount: 0,
-        updatedAt: serverTimestamp()
-      };
-      
-      // Add createdAt only for new departments
-      if (isNewDepartment) {
-        departmentData.createdAt = serverTimestamp();
+    if (userData.role === 'owner') {
+      // Owner of custom department (departmentId is null, customDepartmentName exists)
+      if (!userData.departmentId && userData.customDepartmentName) {
+        // Create new custom department with auto-generated ID
+        const departmentRef = doc(collection(db, 'departments'));
+        finalDepartmentId = departmentRef.id;
+        
+        const departmentData = {
+          departmentId: finalDepartmentId,
+          name: userData.customDepartmentName,
+          type: 'custom',
+          ownerId: userId,
+          ownerName: `${userData.firstName} ${userData.lastName}`,
+          ownerEmail: userData.email,
+          adminCount: 0,
+          workerCount: 0,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: approverId
+        };
+        
+        await setDoc(departmentRef, departmentData);
+        
+        // Update user with the new department ID
+        await updateDoc(userRef, {
+          departmentId: finalDepartmentId,
+          departmentName: userData.customDepartmentName
+        });
+      } 
+      // Owner of predefined department (departmentId exists)
+      else if (userData.departmentId) {
+        const departmentRef = doc(db, 'departments', userData.departmentId);
+        
+        // Get existing department data
+        const departmentSnap = await getDoc(departmentRef);
+        
+        if (!departmentSnap.exists()) {
+          // This shouldn't happen for predefined departments
+          console.error('Predefined department not found:', userData.departmentId);
+          throw new Error('מחלקה לא נמצאה במערכת');
+        }
+        
+        // Update existing department with owner info (don't overwrite, just add owner)
+        await updateDoc(departmentRef, {
+          ownerId: userId,
+          ownerName: `${userData.firstName} ${userData.lastName}`,
+          ownerEmail: userData.email,
+          updatedAt: serverTimestamp()
+        });
       }
-      
-      // Use setDoc with merge to create or update
-      await setDoc(departmentRef, departmentData, { merge: true });
     }
-    // Step 4: If admin or worker, increment department counts
+    // Step 3: If admin or worker, increment department counts
     else if ((userData.role === 'admin' || userData.role === 'worker') && userData.departmentId) {
       const departmentRef = doc(db, 'departments', userData.departmentId);
       

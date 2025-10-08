@@ -14,7 +14,6 @@ export const COLLECTIONS = {
   DEPARTMENTS: 'departments',
   SCHEDULES: 'schedules',
   SHIFTS: 'shifts',
-  STATISTICS: 'statistics',
   NOTIFICATIONS: 'notifications'
 } as const;
 

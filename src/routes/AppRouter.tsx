@@ -8,7 +8,7 @@ import { USER_ROLES } from '../config/appConfig';
 import AuthPage from '../pages/login/AuthPage';
 import DeveloperRouter from '../pages/developer/DeveloperRouter';
 import OwnerRouter from '../pages/owner/OwnerRouter';
-import AdminDashboard from '../pages/admin';
+import { AdminRouter } from '../pages/admin';
 
 /**
  * App Router
@@ -55,7 +55,7 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <RoleBasedRoute allowedRoles={[USER_ROLES.ADMIN]}>
-              <AdminDashboard />
+              <AdminRouter />
             </RoleBasedRoute>
           </ProtectedRoute>
         }

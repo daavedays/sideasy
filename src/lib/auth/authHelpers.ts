@@ -23,6 +23,7 @@ import {
   Timestamp 
 } from 'firebase/firestore';
 import { auth, db } from '../../config/firebase';
+import { DEPARTMENT_IDS } from '../../config/departmentIds';
 
 /**
  * User data structure in Firestore
@@ -62,17 +63,30 @@ export async function signUp(
     // Step 2: Send email verification
     await sendEmailVerification(user);
 
-    // Step 3: Determine department name
+    // Step 3: Map department keys to actual Firestore IDs and names
+    let finalDepartmentId: string | null = null;
     let departmentName = '';
+    
     if (departmentId === 'other' && customDepartmentName) {
+      // Custom department - will be created after approval
+      finalDepartmentId = null;
       departmentName = customDepartmentName;
     } else {
+      // Map string keys to actual Firestore IDs
+      const departmentKeyToId: Record<string, string> = {
+        'ground_support': DEPARTMENT_IDS.GROUND_SUPPORT,
+        'logistics': DEPARTMENT_IDS.LOGISTICS,
+        'medical': DEPARTMENT_IDS.MEDICAL
+      };
+      
       // Map department IDs to names
       const departmentNames: Record<string, string> = {
         'ground_support': 'שירותי קרקע',
         'logistics': 'לוגיסטיקה',
         'medical': 'מרפאה'
       };
+      
+      finalDepartmentId = departmentKeyToId[departmentId] || null;
       departmentName = departmentNames[departmentId] || customDepartmentName || 'אחר';
     }
 
@@ -83,7 +97,7 @@ export async function signUp(
       firstName: firstName,
       lastName: lastName,
       role: role,
-      departmentId: departmentId === 'other' ? null : departmentId,
+      departmentId: finalDepartmentId,
       departmentName: departmentName,
       status: 'pending',
       emailVerified: false,
@@ -103,7 +117,7 @@ export async function signUp(
 
     return {
       success: true,
-      message: 'תודה על ההרשמה! שלב הבא:\n1️⃣ בדוק את האימייל שלך ולחץ על קישור האימות\n2️⃣ חזור לכאן ונסה להתחבר (כדי לעדכן את הסטטוס)\n3️⃣ המתן לאישור מנהל המערכת',
+      message: '✅ ההרשמה הושלמה בהצלחה!\n\n📋 השלבים הבאים:\n1️⃣ בדוק את תיבת האימייל שלך\n2️⃣ לחץ על קישור האימות\n3️⃣ חזור לאתר ונסה להתחבר (חשוב! כדי להשלים את התהליך)\n4️⃣ המתן לאישור מנהל המערכת\n\n💡 תקבל הודעה כאשר החשבון יאושר',
       userId: user.uid
     };
 
@@ -187,7 +201,10 @@ export async function signIn(
     }
 
     // Step 4: Check if email is verified
-    if (!user.emailVerified && userData.role !== 'developer') {
+    // Check BOTH Firebase Auth AND Firestore (admin might manually verify in Firestore)
+    const isEmailVerified = user.emailVerified || userData.emailVerified;
+    
+    if (!isEmailVerified && userData.role !== 'developer') {
       await firebaseSignOut(auth);
       return {
         success: false,
@@ -201,7 +218,7 @@ export async function signIn(
       await firebaseSignOut(auth);
       return {
         success: false,
-        message: '✅ האימייל שלך אומת בהצלחה!\n⏳ חשבונך ממתין לאישור מנהל המערכת.\n📧 תקבל הודעה כאשר החשבון יאושר.',
+        message: '✅ מעולה! האימות הושלם בהצלחה\n\n⏳ חשבונך כעת ממתין לאישור מנהל המערכת\n\n📧 תקבל אישור בהקדם האפשרי\n\n💡 תוכל להתחבר מיד לאחר קבלת האישור',
         needsApproval: true
       };
     }
