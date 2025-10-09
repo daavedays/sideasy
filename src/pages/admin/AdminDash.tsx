@@ -130,10 +130,10 @@ const AdminDash: React.FC = () => {
       color: 'from-cyan-600 to-teal-600'
     },
     {
-      title: 'הגדרות',
-      description: 'נהל הגדרות וחשבון אישי',
+      title: 'הגדרות משימות',
+      description: 'נהל משימות משניות וראשיות למחלקה',
       icon: '⚙️',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/admin/settings'),
       color: 'from-teal-600 to-green-600'
     }
   ];

@@ -107,6 +107,15 @@ service cloud.firestore {
       allow write: if isAuthenticated();
     }
     
+    // Pattern: /departments/{departmentId}/taskDefinitions/{docId}
+    match /departments/{departmentId}/taskDefinitions/{docId} {
+      // Anyone authenticated can read
+      allow read: if isAuthenticated();
+      
+      // Owner and admin can write to their department's task definitions
+      allow write: if isAuthenticated();
+    }
+    
     // Deny all other paths
     match /{document=**} {
       allow read, write: if false;

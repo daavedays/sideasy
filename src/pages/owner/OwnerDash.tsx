@@ -106,10 +106,10 @@ const OwnerDash: React.FC = () => {
       color: 'from-blue-600 to-cyan-600'
     },
     {
-      title: 'הגדרות',
-      description: 'נהל הגדרות מחלקה וחשבון',
+      title: 'הגדרות משימות',
+      description: 'נהל משימות משניות וראשיות למחלקה',
       icon: '⚙️',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/owner/settings'),
       color: 'from-cyan-600 to-green-600'
     },
     {

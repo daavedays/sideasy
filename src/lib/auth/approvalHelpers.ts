@@ -18,6 +18,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { UserData } from './authHelpers';
+import { initializeTaskDefinitions } from '../firestore/taskDefinitions';
 
 /**
  * Approve a user
@@ -62,6 +63,9 @@ export async function approveUser(
         };
         
         await setDoc(departmentRef, departmentData);
+        
+        // Initialize task definitions for the new department
+        await initializeTaskDefinitions(finalDepartmentId);
         
         // Update user with the new department ID
         await updateDoc(userRef, {
