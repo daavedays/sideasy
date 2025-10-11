@@ -25,7 +25,7 @@ import SecondaryTaskTable, {
   CellStatus 
 } from '../../components/shared/SecondaryTaskTable';
 import Modal from '../../components/ui/Modal';
-import HebrewDatePicker from '../../../docs/HebrewDatePicker';
+import HebrewDatePicker from '../../components/ui/HebrewDatePicker';
 
 
 interface Worker {
