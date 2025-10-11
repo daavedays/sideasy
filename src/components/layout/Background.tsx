@@ -1,10 +1,14 @@
 import React from 'react';
+import { getGradientOverlay } from '../../config/themeConfig';
 
 /**
  * Background Component
  * 
  * Reusable background component with image slideshow and gradient overlay.
  * Features smooth transitions between images with opacity and blur effects.
+ * 
+ * Gradient overlay color is controlled by themeConfig.ts - change ACTIVE_GRADIENT_OVERLAY
+ * to test different color schemes.
  * 
  * Location: src/components/layout/Background.tsx
  * Purpose: Reusable background for pages
@@ -67,8 +71,8 @@ const Background: React.FC<BackgroundProps> = ({
         />
       ))}
 
-      {/* Gradient Overlay */}
-      <div className="absolute inset-0 bg-gradient-to-br from-purple-900/60 via-blue-900/50 to-indigo-900/60" />
+      {/* Gradient Overlay - Color controlled by themeConfig.ts */}
+      <div className={`absolute inset-0 ${getGradientOverlay()}`} />
     </div>
   );
 };

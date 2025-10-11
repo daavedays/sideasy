@@ -9,6 +9,7 @@ import AuthPage from '../pages/login/AuthPage';
 import DeveloperRouter from '../pages/developer/DeveloperRouter';
 import OwnerRouter from '../pages/owner/OwnerRouter';
 import { AdminRouter } from '../pages/admin';
+import { WorkerRouter } from '../pages/worker';
 
 /**
  * App Router
@@ -66,9 +67,7 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <RoleBasedRoute allowedRoles={[USER_ROLES.WORKER]}>
-              <div className="min-h-screen flex items-center justify-center">
-                <div className="text-white text-2xl">Worker Dashboard (Coming Soon)</div>
-              </div>
+              <WorkerRouter />
             </RoleBasedRoute>
           </ProtectedRoute>
         }

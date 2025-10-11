@@ -1,15 +1,15 @@
 /**
- * Admin Dashboard Component
+ * Worker Dashboard Component
  * 
- * Main dashboard for department administrators with navigation cards and department stats.
- * Coherent design with Owner dashboard - glassmorphism, Hebrew RTL, responsive.
+ * Main dashboard for workers to view schedules, submit requests, and view statistics.
+ * Coherent design with Owner/Admin dashboards - glassmorphism, Hebrew RTL, responsive.
  * 
- * Location: src/pages/admin/AdminDash.tsx
- * Purpose: Admin dashboard with department overview
+ * Location: src/pages/worker/WorkerDash.tsx
+ * Purpose: Worker dashboard with schedule viewing and personal stats
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../../config/firebase';
 import { UserData } from '../../lib/auth/authHelpers';
@@ -25,11 +25,10 @@ interface DepartmentData {
   workerCount: number;
 }
 
-const AdminDash: React.FC = () => {
+const WorkerDash: React.FC = () => {
   const navigate = useNavigate();
   const [userData, setUserData] = useState<UserData | null>(null);
   const [departmentData, setDepartmentData] = useState<DepartmentData | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -65,75 +64,33 @@ const AdminDash: React.FC = () => {
     fetchData();
   }, []);
 
-  // Real-time listener for pending approvals (workers for this department)
-  useEffect(() => {
-    if (!userData?.departmentId) return;
-
-    const q = query(
-      collection(db, 'users'),
-      where('status', '==', 'pending'),
-      where('departmentId', '==', userData.departmentId),
-      where('role', '==', 'worker')
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPendingCount(snapshot.size);
-    }, (error) => {
-      console.error('Error fetching pending users:', error);
-    });
-
-    return () => unsubscribe();
-  }, [userData?.departmentId]);
-
   const navigationCards = [
     {
-      title: 'ממתינים לאישור',
-      description: 'אשר או דחה עובדים חדשים',
-      icon: '✋',
-      badge: pendingCount > 0 ? `${pendingCount}` : null,
-      onClick: () => navigate('/admin/pending-approvals'),
-      color: 'from-purple-600 to-pink-600'
-    },
-    {
-      title: 'תורנויות',
-      description: 'צפה וערוך תורנויות פעילות',
-      icon: '📅',
-      onClick: () => alert('בקרוב!'),
-      color: 'from-pink-600 to-rose-600'
-    },
-    {
-      title: 'סידור עבודה',
-      description: 'צור וערוך סידורי עבודה',
+      title: 'לוח תורנויות',
+      description: 'צפה בתורנויות שלך',
       icon: '📋',
       onClick: () => alert('בקרוב!'),
-      color: 'from-rose-600 to-orange-600'
+      color: 'from-purple-600 to-blue-600'
     },
     {
-      title: 'תוכניות שבועיות',
-      description: 'נהל תוכניות עבודה שבועיות',
-      icon: '🗓️',
-      onClick: () => alert('בקרוב!'),
-      color: 'from-orange-600 to-amber-600'
-    },
-    {
-      title: 'ניהול עובדים',
-      description: 'נהל הסמכות עובדים במחלקה',
-      icon: '👥',
-      onClick: () => navigate('/admin/manage-workers'),
+      title: 'מערכת הגשת בקשות',
+      description: 'הגש בקשות להעדפות משמרות',
+      icon: '✍️',
+      onClick: () => navigate('/worker/preferences'),
       color: 'from-blue-600 to-cyan-600'
     },
     {
-      title: 'סטטיסטיקה',
-      description: 'צפה בסטטיסטיקות ודוחות',
-      icon: '📊',
+      title: 'צפה בתוכנית שבועית',
+      description: 'צפה בתוכנית העבודה השבועית',
+      icon: '📅',
       onClick: () => alert('בקרוב!'),
       color: 'from-cyan-600 to-teal-600'
     },
     {
-      title: 'הגדרות משימות',
-      description: 'נהל משימות משניות וראשיות למחלקה',
-      icon: '⚙️',
-      onClick: () => navigate('/admin/settings'),
+      title: 'סטטיסטיקה',
+      description: 'צפה בסטטיסטיקות שלך',
+      icon: '📊',
+      onClick: () => alert('בקרוב!'),
       color: 'from-teal-600 to-green-600'
     }
   ];
@@ -169,7 +126,7 @@ const AdminDash: React.FC = () => {
           {/* Department Info Card */}
           <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 mb-8">
             <h2 className="text-3xl font-bold text-white mb-6">פרטי המחלקה</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
               <div className="bg-white/5 rounded-xl p-4 md:p-6 text-center">
                 <div className="text-4xl mb-2">🏢</div>
                 <p className="text-white/70 mb-1 text-sm md:text-base">שם המחלקה</p>
@@ -178,15 +135,8 @@ const AdminDash: React.FC = () => {
                 </p>
               </div>
               <div className="bg-white/5 rounded-xl p-4 md:p-6 text-center">
-                <div className="text-4xl mb-2">👤</div>
-                <p className="text-white/70 mb-1 text-sm md:text-base">מנהלים</p>
-                <p className="text-xl md:text-2xl font-bold text-white">
-                  {departmentData?.adminCount || 0}
-                </p>
-              </div>
-              <div className="bg-white/5 rounded-xl p-4 md:p-6 text-center">
                 <div className="text-4xl mb-2">👥</div>
-                <p className="text-white/70 mb-1 text-sm md:text-base">עובדים</p>
+                <p className="text-white/70 mb-1 text-sm md:text-base">סה"כ עובדים</p>
                 <p className="text-xl md:text-2xl font-bold text-white">
                   {departmentData?.workerCount || 0}
                 </p>
@@ -197,20 +147,13 @@ const AdminDash: React.FC = () => {
           {/* Navigation Cards */}
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-white mb-4">מה תרצה לעשות?</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
               {navigationCards.map((card, index) => (
                 <button
                   key={index}
                   onClick={card.onClick}
                   className="relative bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 hover:bg-white/15 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-right group"
                 >
-                  {/* Badge */}
-                  {card.badge && (
-                    <div className="absolute top-4 left-4 bg-red-500 text-white text-sm font-bold rounded-full w-8 h-8 flex items-center justify-center shadow-lg">
-                      {card.badge}
-                    </div>
-                  )}
-
                   {/* Icon */}
                   <div className="text-5xl md:text-6xl mb-4 group-hover:scale-110 transition-transform">
                     {card.icon}
@@ -238,9 +181,9 @@ const AdminDash: React.FC = () => {
             <h2 className="text-2xl font-bold text-white mb-6">סיכום מהיר</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
               <div className="bg-white/5 rounded-xl p-4 md:p-6">
-                <p className="text-white/70 mb-2 text-sm md:text-base">סידורים פעילים</p>
+                <p className="text-white/70 mb-2 text-sm md:text-base">תורנויות החודש</p>
                 <p className="text-3xl md:text-4xl font-bold text-white">0</p>
-                <p className="text-white/50 text-xs md:text-sm mt-2">החודש</p>
+                <p className="text-white/50 text-xs md:text-sm mt-2">סה"כ תורנויות</p>
               </div>
               <div className="bg-white/5 rounded-xl p-4 md:p-6">
                 <p className="text-white/70 mb-2 text-sm md:text-base">שעות עבודה</p>
@@ -248,9 +191,9 @@ const AdminDash: React.FC = () => {
                 <p className="text-white/50 text-xs md:text-sm mt-2">החודש</p>
               </div>
               <div className="bg-white/5 rounded-xl p-4 md:p-6">
-                <p className="text-white/70 mb-2 text-sm md:text-base">סטטוס מחלקה</p>
-                <p className="text-xl md:text-2xl font-bold text-green-400">פעילה ✓</p>
-                <p className="text-white/50 text-xs md:text-sm mt-2">מוכן לעבודה</p>
+                <p className="text-white/70 mb-2 text-sm md:text-base">תורנות הבאה</p>
+                <p className="text-xl md:text-2xl font-bold text-blue-400">טרם נקבע</p>
+                <p className="text-white/50 text-xs md:text-sm mt-2">ממתין לסידור</p>
               </div>
             </div>
           </div>
@@ -260,4 +203,5 @@ const AdminDash: React.FC = () => {
   );
 };
 
-export default AdminDash;
+export default WorkerDash;
+

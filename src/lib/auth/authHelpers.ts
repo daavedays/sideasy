@@ -39,6 +39,8 @@ export interface UserData {
   customDepartmentName?: string;
   status: 'pending' | 'approved' | 'rejected';
   emailVerified: boolean;
+  activity: 'active' | 'deleted' | 'inactive';
+  isOfficer: boolean;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -101,6 +103,8 @@ export async function signUp(
       departmentName: departmentName,
       status: 'pending',
       emailVerified: false,
+      activity: 'active',       // Default: active
+      isOfficer: false,         // Default: not an officer
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     };
@@ -228,6 +232,15 @@ export async function signIn(
       return {
         success: false,
         message: 'חשבונך נדחה על ידי מנהל המערכת'
+      };
+    }
+
+    // Step 5.5: Check if user is deleted (soft delete)
+    if (userData.activity === 'deleted') {
+      await firebaseSignOut(auth);
+      return {
+        success: false,
+        message: 'חשבון זה הוסר מהמערכת. נא ליצור קשר עם מנהל המחלקה.'
       };
     }
 

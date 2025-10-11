@@ -18,7 +18,8 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { UserData } from './authHelpers';
-import { initializeTaskDefinitions } from '../firestore/taskDefinitions';
+import { initializeDepartmentCollections } from '../firestore/initializeDepartment';
+import { createWorkerDocument } from '../firestore/workers';
 
 /**
  * Approve a user
@@ -32,6 +33,7 @@ export async function approveUser(
     // Step 1: Update user status to approved
     const userRef = doc(db, 'users', userId);
     await updateDoc(userRef, {
+      userId: userId,  // ✅ CRITICAL: Ensure userId field is set
       status: 'approved',
       approvedBy: approverId,
       approvedAt: serverTimestamp(),
@@ -64,8 +66,8 @@ export async function approveUser(
         
         await setDoc(departmentRef, departmentData);
         
-        // Initialize task definitions for the new department
-        await initializeTaskDefinitions(finalDepartmentId);
+        // Initialize ALL collections for the new department
+        await initializeDepartmentCollections(finalDepartmentId);
         
         // Update user with the new department ID
         await updateDoc(userRef, {
@@ -114,6 +116,27 @@ export async function approveUser(
         }
         
         await updateDoc(departmentRef, updateData);
+      }
+    }
+
+    // Step 4: Create worker document for the approved user
+    // Workers collection includes: owner, admin, and worker roles
+    if (finalDepartmentId) {
+      const workerResult = await createWorkerDocument(
+        finalDepartmentId,
+        userId,
+        {
+          firstName: userData.firstName,
+          lastName: userData.lastName,
+          email: userData.email,
+          role: userData.role as 'owner' | 'admin' | 'worker'
+        }
+      );
+
+      if (!workerResult.success) {
+        console.warn('Failed to create worker document:', workerResult.message);
+        // Don't fail the approval if worker doc creation fails
+        // The admin can manually fix this later
       }
     }
 

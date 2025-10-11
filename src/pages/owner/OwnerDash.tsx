@@ -102,7 +102,7 @@ const OwnerDash: React.FC = () => {
       title: 'ניהול עובדים',
       description: 'הוסף, ערוך וצפה בעובדי המחלקה',
       icon: '👥',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/owner/manage-workers'),
       color: 'from-blue-600 to-cyan-600'
     },
     {
