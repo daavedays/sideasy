@@ -556,50 +556,28 @@ const WorkerPreferences: React.FC = () => {
               תאריך: {formatDateForDisplay(selectedCell.date)} | משימה: {getTaskName(selectedCell.taskId)}
             </p>
             
-            {/* Show all worker preferences for this date (all tasks) */}
+            {/* Show worker preferences for THIS SPECIFIC CELL ONLY */}
             {(() => {
-              // Collect all preferences for this date across all tasks
-              const allPreferencesForDate: Array<{
-                workerName: string;
-                workerId: string;
-                taskName: string;
-                status: CellStatus;
-              }> = [];
-
-              Array.from(cellData.entries()).forEach(([_, cell]) => {
-                // Check if this cell is for the selected date
-                if (cell.date.getTime() === selectedCell.date.getTime()) {
-                  const taskName = getTaskName(cell.taskId);
-                  cell.workers.forEach(worker => {
-                    allPreferencesForDate.push({
-                      workerName: worker.workerName,
-                      workerId: worker.workerId,
-                      taskName,
-                      status: worker.status
-                    });
-                  });
-                }
-              });
-
-              return allPreferencesForDate.length > 0 && (
+              const key = getCellKey(selectedCell.taskId, selectedCell.date);
+              const cell = cellData.get(key);
+              
+              return cell && cell.workers.length > 0 && (
                 <div className="bg-slate-800/50 rounded-lg p-3 mb-4 border border-slate-600/30 max-h-48 overflow-y-auto">
                   <p className="text-white/60 text-sm font-bold mb-2">בקשות:</p>
                   <div className="space-y-1">
-                    {allPreferencesForDate.map((pref, index) => (
+                    {cell.workers.map((worker, index) => (
                       <div
                         key={index}
                         className={`text-sm ${
-                          pref.workerId === currentWorker?.workerId
+                          worker.workerId === currentWorker?.workerId
                             ? 'text-blue-400 font-bold'
                             : 'text-white/80'
                         }`}
                       >
-                        <span>{pref.workerName}</span>
-                        <span className="text-white/60"> - </span>
-                        <span>{pref.taskName}</span>
+                        <span>{worker.workerName}</span>
                         <span className="text-white/60"> - </span>
                         <span>
-                          {pref.status === 'preferred' ? 'מעדיף' : 'חסם'}
+                          {worker.status === 'preferred' ? 'מעדיף' : 'חסם'}
                         </span>
                       </div>
                     ))}
