@@ -21,10 +21,14 @@ import { Timestamp } from 'firebase/firestore';
 // Preference/Assignment types
 export type CellStatus = 'empty' | 'assigned' | 'blocked' | 'preferred';
 
-export interface CellData {
+export interface WorkerInCell {
   workerId: string;
   workerName: string;
   status: CellStatus;
+}
+
+export interface CellData {
+  workers: WorkerInCell[]; // Array of workers who selected this cell
   taskId: string;
   date: Date;
 }
@@ -128,38 +132,36 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
 
   /**
    * Get cell styling based on status (with weekend consideration)
+   * ONLY shows color if current worker has set a preference
    */
   const getCellStyle = (cell: CellData | undefined, isWeekend: boolean): string => {
     // Base weekend tint for empty cells
-    if (!cell || cell.status === 'empty') {
+    if (!cell || cell.workers.length === 0) {
       return isWeekend 
         ? 'bg-indigo-900/30 hover:bg-indigo-800/40 border-indigo-700/50' 
         : 'bg-slate-800/50 hover:bg-slate-700/70 border-slate-600/50';
     }
 
-    const isCurrentWorker = currentWorkerId && cell.workerId === currentWorkerId;
+    // Check if current worker is in this cell and get their status
+    const currentWorkerInCell = currentWorkerId && 
+      cell.workers.find(w => w.workerId === currentWorkerId);
     
     // Add subtle weekend overlay to filled cells
     const weekendOverlay = isWeekend ? 'ring-1 ring-indigo-500/30' : '';
     
-    switch (cell.status) {
-      case 'assigned':
-        return `${isCurrentWorker 
-          ? 'bg-blue-600/80 border-blue-400/50' 
-          : 'bg-blue-500/60 border-blue-400/40'} ${weekendOverlay}`;
-      case 'blocked':
-        return `${isCurrentWorker
-          ? 'bg-red-600/80 border-red-400/50'
-          : 'bg-red-500/60 border-red-400/40'} ${weekendOverlay}`;
-      case 'preferred':
-        return `${isCurrentWorker
-          ? 'bg-green-600/80 border-green-400/50'
-          : 'bg-green-500/60 border-green-400/40'} ${weekendOverlay}`;
-      default:
-        return isWeekend 
-          ? 'bg-indigo-900/30 hover:bg-indigo-800/40 border-indigo-700/50' 
-          : 'bg-slate-800/50 hover:bg-slate-700/70 border-slate-600/50';
+    // ONLY color cell if current worker has a preference here
+    if (currentWorkerInCell) {
+      if (currentWorkerInCell.status === 'preferred') {
+        return `bg-green-600/80 border-green-400/50 ${weekendOverlay}`;
+      } else if (currentWorkerInCell.status === 'blocked') {
+        return `bg-red-600/80 border-red-400/50 ${weekendOverlay}`;
+      }
     }
+    
+    // Default color (even if other workers have preferences)
+    return isWeekend 
+      ? 'bg-indigo-900/30 hover:bg-indigo-800/40 border-indigo-700/50' 
+      : 'bg-slate-800/50 hover:bg-slate-700/70 border-slate-600/50';
   };
 
   return (
@@ -233,13 +235,41 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
                       flex items-center justify-center
                     `}
                   >
-                    {cell && cell.status !== 'empty' && isQualified && (
-                      <div className="text-center">
-                        {cell.status === 'blocked' ? (
+                    {cell && cell.workers.length > 0 && isQualified && (
+                      <div className="text-center w-full px-1">
+                        {cell.workers.every(w => w.status === 'blocked') ? (
+                          // All blocked - show X
                           <div className="text-white font-bold text-lg">✕</div>
                         ) : (
-                          <div className="text-white font-semibold text-xs">
-                            {cell.workerName}
+                          // Show worker names (max 3, then "..." or "CurrentWorker...")
+                          <div className="text-white font-semibold text-xs leading-tight">
+                            {(() => {
+                              const currentWorkerInCell = cell.workers.find(
+                                w => w.workerId === currentWorkerId
+                              );
+                              const preferredWorkers = cell.workers.filter(
+                                w => w.status === 'preferred'
+                              );
+                              
+                              if (preferredWorkers.length <= 3) {
+                                // Show all names
+                                return preferredWorkers
+                                  .map(w => w.workerName.split(' ')[0]) // First name only
+                                  .join(', ');
+                              } else {
+                                // More than 3 workers
+                                if (currentWorkerInCell && currentWorkerInCell.status === 'preferred') {
+                                  // Show current worker's name + "..."
+                                  return `${currentWorkerInCell.workerName.split(' ')[0]}...`;
+                                } else {
+                                  // Show first 3 + "..."
+                                  return preferredWorkers
+                                    .slice(0, 3)
+                                    .map(w => w.workerName.split(' ')[0])
+                                    .join(', ') + '...';
+                                }
+                              }
+                            })()}
                           </div>
                         )}
                       </div>

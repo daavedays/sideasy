@@ -137,6 +137,7 @@ const WorkerPreferences: React.FC = () => {
 
   /**
    * Build cell data from workers' preferences when date range or workers change
+   * Now supports multiple workers per cell
    */
   useEffect(() => {
     if (!startDate || !endDate || workers.length === 0) return;
@@ -156,13 +157,25 @@ const WorkerPreferences: React.FC = () => {
           
           const status: CellStatus = pref.task ? 'preferred' : 'blocked';
           
-          newCellData.set(key, {
+          const workerInCell = {
             workerId: worker.workerId,
             workerName: `${worker.firstName} ${worker.lastName}`,
-            status,
-            taskId,
-            date: prefDate
-          });
+            status
+          };
+
+          // Check if cell already exists
+          const existingCell = newCellData.get(key);
+          if (existingCell) {
+            // Add worker to existing cell
+            existingCell.workers.push(workerInCell);
+          } else {
+            // Create new cell
+            newCellData.set(key, {
+              workers: [workerInCell],
+              taskId,
+              date: prefDate
+            });
+          }
         }
       });
     });
@@ -189,37 +202,111 @@ const WorkerPreferences: React.FC = () => {
     const newCellData = new Map(cellData);
 
     if (action === 'clear') {
-      // Remove preference for this specific cell
-      newCellData.delete(key);
+      // Remove ONLY current worker's preference for this cell
+      const existingCell = newCellData.get(key);
+      if (existingCell) {
+        const updatedWorkers = existingCell.workers.filter(
+          w => w.workerId !== currentWorker.workerId
+        );
+        
+        if (updatedWorkers.length > 0) {
+          // Other workers still have preferences, keep cell with remaining workers
+          newCellData.set(key, {
+            ...existingCell,
+            workers: updatedWorkers
+          });
+        } else {
+          // No workers left, remove cell entirely
+          newCellData.delete(key);
+        }
+      }
     } else if (action === 'prefer') {
-      // Add/update preferred task
-      newCellData.set(key, {
+      // Add/update current worker's preferred task
+      const existingCell = newCellData.get(key);
+      const newWorkerData = {
         workerId: currentWorker.workerId,
         workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
-        status: 'preferred',
-        taskId,
-        date
-      });
+        status: 'preferred' as CellStatus
+      };
+
+      if (existingCell) {
+        // Check if current worker already has a preference here
+        const workerIndex = existingCell.workers.findIndex(
+          w => w.workerId === currentWorker.workerId
+        );
+        
+        if (workerIndex >= 0) {
+          // Update existing preference
+          existingCell.workers[workerIndex] = newWorkerData;
+        } else {
+          // Add new worker to cell
+          existingCell.workers.push(newWorkerData);
+        }
+        newCellData.set(key, existingCell);
+      } else {
+        // Create new cell
+        newCellData.set(key, {
+          workers: [newWorkerData],
+          taskId,
+          date
+        });
+      }
     } else if (action === 'blockTask') {
-      // Block this specific task on this date
-      newCellData.set(key, {
+      // Block this specific task on this date for current worker
+      const existingCell = newCellData.get(key);
+      const newWorkerData = {
         workerId: currentWorker.workerId,
         workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
-        status: 'blocked',
-        taskId,
-        date
-      });
+        status: 'blocked' as CellStatus
+      };
+
+      if (existingCell) {
+        const workerIndex = existingCell.workers.findIndex(
+          w => w.workerId === currentWorker.workerId
+        );
+        
+        if (workerIndex >= 0) {
+          existingCell.workers[workerIndex] = newWorkerData;
+        } else {
+          existingCell.workers.push(newWorkerData);
+        }
+        newCellData.set(key, existingCell);
+      } else {
+        newCellData.set(key, {
+          workers: [newWorkerData],
+          taskId,
+          date
+        });
+      }
     } else if (action === 'blockDay') {
       // Block ENTIRE day - add blocked entry for ALL tasks on this date
       tasks.forEach(task => {
         const dayKey = getCellKey(task.id, date);
-        newCellData.set(dayKey, {
+        const existingCell = newCellData.get(dayKey);
+        const newWorkerData = {
           workerId: currentWorker.workerId,
           workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
-          status: 'blocked',
-          taskId: task.id,
-          date
-        });
+          status: 'blocked' as CellStatus
+        };
+
+        if (existingCell) {
+          const workerIndex = existingCell.workers.findIndex(
+            w => w.workerId === currentWorker.workerId
+          );
+          
+          if (workerIndex >= 0) {
+            existingCell.workers[workerIndex] = newWorkerData;
+          } else {
+            existingCell.workers.push(newWorkerData);
+          }
+          newCellData.set(dayKey, existingCell);
+        } else {
+          newCellData.set(dayKey, {
+            workers: [newWorkerData],
+            taskId: task.id,
+            date
+          });
+        }
       });
     }
 
@@ -230,16 +317,27 @@ const WorkerPreferences: React.FC = () => {
   };
 
   /**
-   * Clear all preferences in date range
+   * Clear all preferences in date range for current worker only
    */
   const handleClearAll = () => {
     if (!currentWorker) return;
     
     const newCellData = new Map(cellData);
     
-    // Remove all cells belonging to current worker
+    // Remove current worker from all cells
     Array.from(newCellData.entries()).forEach(([key, cell]) => {
-      if (cell.workerId === currentWorker.workerId) {
+      const updatedWorkers = cell.workers.filter(
+        w => w.workerId !== currentWorker.workerId
+      );
+      
+      if (updatedWorkers.length > 0) {
+        // Keep cell with remaining workers
+        newCellData.set(key, {
+          ...cell,
+          workers: updatedWorkers
+        });
+      } else {
+        // No workers left, remove cell
         newCellData.delete(key);
       }
     });
@@ -250,27 +348,57 @@ const WorkerPreferences: React.FC = () => {
 
   /**
    * Save preferences to Firestore
+   * Merges new preferences with existing ones outside the current date range
    */
   const handleSavePreferences = async () => {
-    if (!currentWorker || !departmentId) return;
+    if (!currentWorker || !departmentId || !startDate || !endDate) return;
 
     try {
-      // Collect all preferences for current worker from cellData
-      const preferences: { date: Timestamp; task: string | null }[] = [];
+      // Get current date range boundaries
+      const rangeStart = new Date(startDate);
+      const rangeEnd = new Date(endDate);
+
+      // Fetch existing preferences from Firestore
+      const workerRef = doc(db, 'departments', departmentId, 'workers', currentWorker.workerId);
+      const workerDoc = await getDoc(workerRef);
+      const existingPreferences = workerDoc.exists() ? (workerDoc.data().preferences || []) : [];
+
+      // Filter out existing preferences that fall within current date range
+      // We'll replace these with new ones
+      const preferencesOutsideRange = existingPreferences.filter((pref: any) => {
+        const prefDate = pref.date.toDate();
+        return prefDate < rangeStart || prefDate > rangeEnd;
+      });
+
+      // Collect new preferences for current worker from cellData (current date range only)
+      const newPreferencesInRange: { date: Timestamp; task: string | null }[] = [];
       
       Array.from(cellData.values()).forEach((cell) => {
-        if (cell.workerId === currentWorker.workerId) {
-          preferences.push({
+        // Find current worker in this cell
+        const currentWorkerInCell = cell.workers.find(
+          w => w.workerId === currentWorker.workerId
+        );
+        
+        if (currentWorkerInCell) {
+          newPreferencesInRange.push({
             date: Timestamp.fromDate(cell.date),
-            task: cell.status === 'blocked' ? null : cell.taskId
+            task: currentWorkerInCell.status === 'blocked' ? null : cell.taskId
           });
         }
       });
 
-      // Update Firestore - CORRECT PATH
-      const workerRef = doc(db, 'departments', departmentId, 'workers', currentWorker.workerId);
+      // Merge: preferences outside range + new preferences in range
+      const mergedPreferences = [...preferencesOutsideRange, ...newPreferencesInRange];
+
+      console.log('✅ Preference Save Summary:');
+      console.log('  - Existing preferences:', existingPreferences.length);
+      console.log('  - Preferences outside range (kept):', preferencesOutsideRange.length);
+      console.log('  - New preferences in range:', newPreferencesInRange.length);
+      console.log('  - Total after merge:', mergedPreferences.length);
+
+      // Update Firestore with merged preferences
       await updateDoc(workerRef, {
-        preferences,
+        preferences: mergedPreferences,
         updatedAt: Timestamp.now()
       });
 
@@ -424,9 +552,61 @@ const WorkerPreferences: React.FC = () => {
         <Modal isOpen={showModal} onClose={() => setShowModal(false)}>
           <div className="p-6" dir="rtl">
             <h2 className="text-2xl font-bold text-white mb-4">בחר פעולה</h2>
-            <p className="text-white/80 mb-6">
+            <p className="text-white/80 mb-2">
               תאריך: {formatDateForDisplay(selectedCell.date)} | משימה: {getTaskName(selectedCell.taskId)}
             </p>
+            
+            {/* Show all worker preferences for this date (all tasks) */}
+            {(() => {
+              // Collect all preferences for this date across all tasks
+              const allPreferencesForDate: Array<{
+                workerName: string;
+                workerId: string;
+                taskName: string;
+                status: CellStatus;
+              }> = [];
+
+              Array.from(cellData.entries()).forEach(([_, cell]) => {
+                // Check if this cell is for the selected date
+                if (cell.date.getTime() === selectedCell.date.getTime()) {
+                  const taskName = getTaskName(cell.taskId);
+                  cell.workers.forEach(worker => {
+                    allPreferencesForDate.push({
+                      workerName: worker.workerName,
+                      workerId: worker.workerId,
+                      taskName,
+                      status: worker.status
+                    });
+                  });
+                }
+              });
+
+              return allPreferencesForDate.length > 0 && (
+                <div className="bg-slate-800/50 rounded-lg p-3 mb-4 border border-slate-600/30 max-h-48 overflow-y-auto">
+                  <p className="text-white/60 text-sm font-bold mb-2">בקשות:</p>
+                  <div className="space-y-1">
+                    {allPreferencesForDate.map((pref, index) => (
+                      <div
+                        key={index}
+                        className={`text-sm ${
+                          pref.workerId === currentWorker?.workerId
+                            ? 'text-blue-400 font-bold'
+                            : 'text-white/80'
+                        }`}
+                      >
+                        <span>{pref.workerName}</span>
+                        <span className="text-white/60"> - </span>
+                        <span>{pref.taskName}</span>
+                        <span className="text-white/60"> - </span>
+                        <span>
+                          {pref.status === 'preferred' ? 'מעדיף' : 'חסם'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             
             <div className="space-y-3">
               <button
@@ -453,13 +633,24 @@ const WorkerPreferences: React.FC = () => {
                 <span>חסום משימה זו</span>
               </button>
               
-              <button
-                onClick={() => handlePreferenceAction('clear')}
-                className="w-full bg-blue-600/80 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-3"
-              >
-                <span className="text-2xl">○</span>
-                <span>נקה</span>
-              </button>
+              {/* Only show clear button if current worker has a preference here */}
+              {(() => {
+                const key = getCellKey(selectedCell.taskId, selectedCell.date);
+                const cell = cellData.get(key);
+                const currentWorkerInCell = currentWorker && cell?.workers.find(
+                  w => w.workerId === currentWorker.workerId
+                );
+                
+                return currentWorkerInCell && (
+                  <button
+                    onClick={() => handlePreferenceAction('clear')}
+                    className="w-full bg-blue-600/80 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-3"
+                  >
+                    <span className="text-2xl">○</span>
+                    <span>נקה את ההעדפה שלי</span>
+                  </button>
+                );
+              })()}
               
               <button
                 onClick={() => setShowModal(false)}
