@@ -13,6 +13,8 @@ import AdminDash from './AdminDash';
 import AdminPendingApprovals from './AdminPendingApprovals';
 import AdminSettings from './AdminSettings';
 import ManageWorkersAdmin from './ManageWorkersAdmin';
+import PrimaryTasksDash from '../common/PrimaryTasksDash';
+import PrimaryTasksTableView from '../common/PrimaryTasksTableView';
 
 const AdminRouter: React.FC = () => {
   return (
@@ -20,6 +22,8 @@ const AdminRouter: React.FC = () => {
       <Route index element={<AdminDash />} />
       <Route path="pending-approvals" element={<AdminPendingApprovals />} />
       <Route path="manage-workers" element={<ManageWorkersAdmin />} />
+      <Route path="primary-tasks" element={<PrimaryTasksDash />} />
+      <Route path="primary-tasks/table-view" element={<PrimaryTasksTableView />} />
       <Route path="settings" element={<AdminSettings />} />
       {/* Future routes will go here:
         - /admin/shifts

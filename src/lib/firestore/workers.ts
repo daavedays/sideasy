@@ -30,6 +30,12 @@ import { db } from '../../config/firebase';
 // TYPES
 // ============================================================================
 
+export interface TaskEntry {
+  taskName: string;
+  startDate: Timestamp;
+  endDate: Timestamp;
+}
+
 export interface WorkerData {
   workerId: string;
   firstName: string;
@@ -48,10 +54,12 @@ export interface WorkerData {
     date: Timestamp;
     task: string | null;
   }[];
-  assignedMainTasks: string[];
-  assignedSecondaryTasks: string[];
-  completedMainTasks: string[];
-  completedSecondaryTasks: string[];
+  completedMainTasks: TaskEntry[];
+  completedSecondaryTasks: TaskEntry[];
+  scheduleTaskMap: {
+    primaryTasks: TaskEntry[];
+    lastUpdate: Timestamp;
+  };
   statistics: {
     totalMainTasks: number;
     totalSecondaryTasks: number;
@@ -70,6 +78,7 @@ export interface WorkerUpdateData {
   activity?: 'active' | 'deleted' | 'inactive';
   qualifications?: string[];
   מחלקה?: string;  // Sub-department field (editable by owner/admin)
+  closingIntervals?: number;  // Closing intervals (editable by owner/admin)
 }
 
 // ============================================================================
@@ -215,10 +224,12 @@ export async function createWorkerDocument(
       qualifications: [],
       closingIntervals: 0,
       preferences: [],
-      assignedMainTasks: [],
-      assignedSecondaryTasks: [],
       completedMainTasks: [],
       completedSecondaryTasks: [],
+      scheduleTaskMap: {
+        primaryTasks: [],
+        lastUpdate: serverTimestamp() as Timestamp
+      },
       statistics: {
         totalMainTasks: 0,
         totalSecondaryTasks: 0,
@@ -280,6 +291,7 @@ export async function updateWorkerWithSync(
     // Worker-only fields
     if (updates.qualifications !== undefined) workerOnlyFields.qualifications = updates.qualifications;
     if (updates.מחלקה !== undefined) workerOnlyFields.מחלקה = updates.מחלקה;
+    if (updates.closingIntervals !== undefined) workerOnlyFields.closingIntervals = updates.closingIntervals;
 
     // Add updatedAt timestamp to both
     const timestamp = serverTimestamp();

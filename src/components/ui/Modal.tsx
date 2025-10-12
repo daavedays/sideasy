@@ -17,6 +17,7 @@ interface ModalProps {
   children: React.ReactNode;
   footer?: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl';
+  dynamicHeight?: boolean;
 }
 
 const Modal: React.FC<ModalProps> = ({
@@ -25,7 +26,8 @@ const Modal: React.FC<ModalProps> = ({
   title,
   children,
   footer,
-  size = 'md'
+  size = 'md',
+  dynamicHeight = false
 }) => {
   if (!isOpen) return null;
 
@@ -37,7 +39,7 @@ const Modal: React.FC<ModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className={`fixed inset-0 z-50 flex items-center justify-center p-4 ${dynamicHeight ? 'items-start' : ''}`}>
       {/* Backdrop */}
       <div 
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
@@ -45,7 +47,7 @@ const Modal: React.FC<ModalProps> = ({
       />
       
       {/* Modal Content */}
-      <div className={`relative w-full ${sizeStyles[size]} bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl`}>
+      <div className={`relative w-full ${sizeStyles[size]} ${dynamicHeight ? 'max-h-[90vh] overflow-y-auto' : ''} bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl`}>
         {/* Header */}
         {title && (
           <div className="flex items-center justify-between p-6 border-b border-white/20">

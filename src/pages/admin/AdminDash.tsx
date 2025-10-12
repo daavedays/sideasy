@@ -95,11 +95,11 @@ const AdminDash: React.FC = () => {
       color: 'from-purple-600 to-pink-600'
     },
     {
-      title: 'תורנויות',
-      description: 'צפה וערוך תורנויות פעילות',
+      title: 'תורנות ראשית',
+      description: 'יצירה ועריכה של לוח משמרות ראשי',
       icon: '📅',
-      onClick: () => alert('בקרוב!'),
-      color: 'from-pink-600 to-rose-600'
+      onClick: () => navigate('/admin/primary-tasks'),
+      color: 'from-indigo-600 to-purple-600'
     },
     {
       title: 'סידור עבודה',

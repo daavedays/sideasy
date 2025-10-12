@@ -13,6 +13,8 @@ import OwnerDash from './OwnerDash';
 import OwnerPendingApprovals from './OwnerPendingApprovals';
 import OwnerSettings from './OwnerSettings';
 import ManageWorkersOwner from './ManageWorkersOwner';
+import PrimaryTasksDash from '../common/PrimaryTasksDash';
+import PrimaryTasksTableView from '../common/PrimaryTasksTableView';
 
 const OwnerRouter: React.FC = () => {
   return (
@@ -20,6 +22,8 @@ const OwnerRouter: React.FC = () => {
       <Route index element={<OwnerDash />} />
       <Route path="pending-approvals" element={<OwnerPendingApprovals />} />
       <Route path="manage-workers" element={<ManageWorkersOwner />} />
+      <Route path="primary-tasks" element={<PrimaryTasksDash />} />
+      <Route path="primary-tasks/table-view" element={<PrimaryTasksTableView />} />
       <Route path="settings" element={<OwnerSettings />} />
       {/* Future routes will go here */}
     </Routes>

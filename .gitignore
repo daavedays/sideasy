@@ -67,6 +67,5 @@ temp/
 *.mdc
 /.cursor/rules
 /.cursor
-
 .cursor/rules/always-read-rules.mdc
 .DS_Store

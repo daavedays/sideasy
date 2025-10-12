@@ -128,11 +128,22 @@ service cloud.firestore {
       // Owner can create/update/delete workers in their department
       allow create, update, delete: if isAuthenticated() && isOwnerOfDepartment();
       
-      // Admin can ONLY update qualifications field for workers
+      // Admin can update qualifications, closing intervals, and schedule-related fields for workers
       allow update: if isAuthenticated() && isAdminOfDepartment()
         && resource.data.role == 'worker'  // Can only update workers (not admins)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['qualifications', 'updatedAt']);
-        // Only qualifications and updatedAt can change
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'qualifications', 
+          'closingIntervals',
+          'updatedAt',
+          'mandatoryClosingDates',
+          'lastClosingDate',
+          'completedMainTasks',
+          'completedSecondaryTasks',
+          'statistics',
+          'scheduleTaskMap',
+          'מחלקה'
+        ]);
+        // Admins can update qualifications, closing intervals, מחלקה, and schedule-related fields
       
       // Worker can update their own preferences
       allow update: if isAuthenticated() 
@@ -143,11 +154,76 @@ service cloud.firestore {
     
     // Pattern: /departments/{departmentId}/schedules/{scheduleId}
     match /departments/{departmentId}/schedules/{scheduleId} {
-      // Anyone authenticated can read
-      allow read: if isAuthenticated();
+      // Helper: Get user data
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
       
-      // Developer, owner, and admin can write
-      allow write: if isAuthenticated();
+      // Helper: Check if user is owner of this department
+      function isOwnerOfDepartment() {
+        return getUserData().role == 'owner' 
+          && getUserData().departmentId == departmentId;
+      }
+      
+      // Helper: Check if user is admin of this department
+      function isAdminOfDepartment() {
+        return getUserData().role == 'admin' 
+          && getUserData().departmentId == departmentId;
+      }
+      
+      // Helper: Check if user is developer
+      function isDeveloper() {
+        return getUserData().role == 'developer';
+      }
+      
+      // Helper: Check if user is worker in this department
+      function isWorkerInDepartment() {
+        return getUserData().role == 'worker' 
+          && getUserData().departmentId == departmentId;
+      }
+      
+      // READ RULES
+      // Developer: Full access
+      allow read: if isAuthenticated() && isDeveloper();
+      
+      // Owner, admin, and workers can read schedules in their department
+      allow read: if isAuthenticated() && (
+        isOwnerOfDepartment() 
+        || isAdminOfDepartment() 
+        || isWorkerInDepartment()
+      );
+      
+      // WRITE RULES
+      // Developer can do anything
+      allow write: if isAuthenticated() && isDeveloper();
+      
+      // Owner and admin can create/update/delete schedules in their department
+      allow create, update, delete: if isAuthenticated() && (
+        isOwnerOfDepartment() || isAdminOfDepartment()
+      );
+      
+      // Pattern: /departments/{departmentId}/schedules/{scheduleId}/primaryTasks/{periodId}
+      match /primaryTasks/{periodId} {
+        // READ RULES
+        // Developer: Full access
+        allow read: if isAuthenticated() && isDeveloper();
+        
+        // Owner, admin, and workers can read primaryTasks in their department
+        allow read: if isAuthenticated() && (
+          isOwnerOfDepartment() 
+          || isAdminOfDepartment() 
+          || isWorkerInDepartment()
+        );
+        
+        // WRITE RULES
+        // Developer can do anything
+        allow write: if isAuthenticated() && isDeveloper();
+        
+        // Only owner and admin can create/update/delete primaryTasks
+        allow create, update, delete: if isAuthenticated() && (
+          isOwnerOfDepartment() || isAdminOfDepartment()
+        );
+      }
     }
     
     // Pattern: /departments/{departmentId}/tasks/{taskId}

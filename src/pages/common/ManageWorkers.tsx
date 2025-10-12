@@ -55,6 +55,10 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
   // Task Definitions (for qualifications)
   const [taskDefinitions, setTaskDefinitions] = useState<SecondaryTaskDefinition[]>([]);
   
+  // Closing Intervals
+  const [customClosingInterval, setCustomClosingInterval] = useState<number | null>(null);
+  const [showCustomIntervalInput, setShowCustomIntervalInput] = useState(false);
+  
   // Changes tracking
   const [hasChanges, setHasChanges] = useState(false);
 
@@ -205,6 +209,9 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
         // Check if מחלקה changed
         const subdepartmentChanged = worker.מחלקה !== original.מחלקה;
 
+        // Check if closingIntervals changed
+        const closingIntervalsChanged = worker.closingIntervals !== original.closingIntervals;
+
         // Check if synced fields changed (email excluded as it cannot be changed)
         const syncedChanged = 
           worker.firstName !== original.firstName ||
@@ -231,20 +238,31 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
           }
         }
 
-        if (qualificationsChanged || syncedChanged || subdepartmentChanged) {
-          // Update worker with sync (email is excluded as it cannot be changed)
-          const result = await updateWorkerWithSync(departmentId, worker.workerId, {
-            firstName: worker.firstName,
-            lastName: worker.lastName,
-            isOfficer: worker.isOfficer,
-            qualifications: worker.qualifications,
-            מחלקה: worker.מחלקה
-          });
+        if (qualificationsChanged || syncedChanged || subdepartmentChanged || closingIntervalsChanged) {
+          // Prepare update data based on role permissions
+          const updateData: any = {};
+          
+          // Worker-only fields (both owner and admin can edit)
+          if (qualificationsChanged) updateData.qualifications = worker.qualifications;
+          if (subdepartmentChanged) updateData.מחלקה = worker.מחלקה;
+          if (closingIntervalsChanged) updateData.closingIntervals = worker.closingIntervals;
+          
+          // Synced fields (only owner can edit)
+          if (userRole === 'owner') {
+            if (worker.firstName !== original.firstName) updateData.firstName = worker.firstName;
+            if (worker.lastName !== original.lastName) updateData.lastName = worker.lastName;
+            if (worker.isOfficer !== original.isOfficer) updateData.isOfficer = worker.isOfficer;
+          }
+          
+          // Only update if there are actual changes to save
+          if (Object.keys(updateData).length > 0) {
+            const result = await updateWorkerWithSync(departmentId, worker.workerId, updateData);
 
-          if (!result.success) {
-            setMessage({ type: 'error', text: `שגיאה בעדכון עובד: ${result.message}` });
-            setSaving(false);
-            return;
+            if (!result.success) {
+              setMessage({ type: 'error', text: `שגיאה בעדכון עובד: ${result.message}` });
+              setSaving(false);
+              return;
+            }
           }
         }
       }
@@ -273,6 +291,15 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
   const handleEdit = (worker: WorkerData) => {
     setEditingWorkerId(worker.workerId);
     setEditingWorker({ ...worker });
+    
+    // Setup closing interval state
+    if (worker.closingIntervals >= 9 && worker.closingIntervals <= 12) {
+      setShowCustomIntervalInput(true);
+      setCustomClosingInterval(worker.closingIntervals);
+    } else {
+      setShowCustomIntervalInput(false);
+      setCustomClosingInterval(null);
+    }
   };
 
   // Update field in current editing worker
@@ -316,6 +343,8 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
   const handleCancelEdit = () => {
     setEditingWorkerId(null);
     setEditingWorker(null);
+    setShowCustomIntervalInput(false);
+    setCustomClosingInterval(null);
   };
 
   // Delete worker
@@ -388,6 +417,49 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
       case 'admin': return 'מנהל/ת';
       case 'worker': return 'עובד/ת';
       default: return role;
+    }
+  };
+
+  const getClosingIntervalLabel = (interval: number): string => {
+    switch (interval) {
+      case 0: return 'ללא סגירות';
+      case 2: return 'חצאים';
+      case 3: return 'שלישים';
+      case 4: return 'רבעים';
+      case 5: return 'אחד לחמש';
+      case 6: return 'אחד לשש';
+      case 8: return 'אחד לשמונה';
+      default: 
+        if (interval >= 9 && interval <= 12) {
+          return `אחר (${interval})`;
+        }
+        return `${interval}`;
+    }
+  };
+
+  const handleClosingIntervalChange = (value: string) => {
+    if (!editingWorker) return;
+
+    if (value === 'custom') {
+      setShowCustomIntervalInput(true);
+      // Keep current value if already custom, otherwise default to 9
+      const defaultCustom = customClosingInterval || 9;
+      setCustomClosingInterval(defaultCustom);
+      handleUpdateField('closingIntervals', defaultCustom);
+    } else {
+      setShowCustomIntervalInput(false);
+      setCustomClosingInterval(null);
+      handleUpdateField('closingIntervals', parseInt(value));
+    }
+  };
+
+  const handleCustomIntervalInput = (value: string) => {
+    if (!editingWorker) return;
+    
+    const numValue = parseInt(value);
+    if (!isNaN(numValue) && numValue >= 9 && numValue <= 12) {
+      setCustomClosingInterval(numValue);
+      handleUpdateField('closingIntervals', numValue);
     }
   };
 
@@ -543,6 +615,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                       <th className="px-6 py-4 text-right text-white font-semibold">מחלקה</th>
                       <th className="px-6 py-4 text-right text-white font-semibold">קצין</th>
                       <th className="px-6 py-4 text-right text-white font-semibold">הסמכות</th>
+                      <th className="px-6 py-4 text-right text-white font-semibold">סגירות</th>
                       <th className="px-6 py-4 text-center text-white font-semibold">פעולות</th>
                     </tr>
                   </thead>
@@ -578,6 +651,9 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                         </td>
                         <td className="px-6 py-4 text-white">
                           {worker.qualifications.length} הסמכות
+                        </td>
+                        <td className="px-6 py-4 text-white">
+                          {getClosingIntervalLabel(worker.closingIntervals)}
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex gap-2 justify-center">
@@ -751,6 +827,51 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                   </p>
                 </div>
               )}
+
+              {/* Closing Intervals - Both roles */}
+              <div>
+                <label className="block text-white mb-2 text-sm font-medium">
+                  אינטרוולי סגירות
+                </label>
+                <select
+                  value={showCustomIntervalInput ? 'custom' : editingWorker.closingIntervals.toString()}
+                  onChange={(e) => handleClosingIntervalChange(e.target.value)}
+                  className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-white/40"
+                >
+                  <option value="0">ללא סגירות</option>
+                  <option value="2">חצאים</option>
+                  <option value="3">שלישים</option>
+                  <option value="4">רבעים</option>
+                  <option value="5">אחד לחמש</option>
+                  <option value="6">אחד לשש</option>
+                  <option value="8">אחד לשמונה</option>
+                  <option value="custom">אחר</option>
+                </select>
+                
+                {/* Custom interval input */}
+                {showCustomIntervalInput && (
+                  <div className="mt-3">
+                    <label className="block text-white mb-2 text-sm font-medium">
+                      הזן ערך מותאם אישית (9-12)
+                    </label>
+                    <input
+                      type="number"
+                      min="9"
+                      max="12"
+                      value={customClosingInterval || 9}
+                      onChange={(e) => handleCustomIntervalInput(e.target.value)}
+                      className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:border-white/40"
+                    />
+                    <p className="text-white/60 text-xs mt-1">
+                      הזן מספר בין 9 ל-12 (כולל)
+                    </p>
+                  </div>
+                )}
+                
+                <p className="text-white/60 text-xs mt-1">
+                  קובע את תדירות הסגירות של העובד בלוח משמרות
+                </p>
+              </div>
             </div>
 
             {/* Modal Actions */}

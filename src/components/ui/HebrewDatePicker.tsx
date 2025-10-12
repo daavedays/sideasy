@@ -28,6 +28,7 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [showAbove, setShowAbove] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   // Hebrew month names
@@ -39,7 +40,7 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
   // Hebrew day names - Sunday (א) first, Saturday (ש) last
   const hebrewDays = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
 
-  // Close picker when clicking outside
+  // Close picker when clicking outside and calculate position
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
@@ -47,9 +48,31 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
       }
     };
 
+    // Calculate if calendar should show above input
+    const calculatePosition = () => {
+      if (pickerRef.current && isOpen) {
+        const rect = pickerRef.current.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        const calendarHeight = 400; // Approximate calendar height
+        
+        setShowAbove(spaceBelow < calendarHeight && spaceAbove > calendarHeight);
+      }
+    };
+
+    if (isOpen) {
+      calculatePosition();
+      window.addEventListener('resize', calculatePosition);
+      window.addEventListener('scroll', calculatePosition);
+    }
+
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('resize', calculatePosition);
+      window.removeEventListener('scroll', calculatePosition);
+    };
+  }, [isOpen]);
 
   // Format date for display (DD/MM/YYYY) - Israel timezone
   const formatDisplayDate = (dateString: string): string => {
@@ -180,7 +203,7 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
 
       {/* Calendar Dropdown */}
       {isOpen && (
-        <div className="absolute z-[9999] mt-2 w-full min-w-[320px] bg-slate-900 backdrop-blur-xl rounded-2xl p-4 border-2 border-slate-500/70 shadow-[0_20px_60px_rgba(0,0,0,0.9)]">
+        <div className={`absolute z-[9999] w-full min-w-[320px] bg-slate-900 backdrop-blur-xl rounded-2xl p-4 border-2 border-slate-500/70 shadow-[0_20px_60px_rgba(0,0,0,0.9)] ${showAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`} style={{ maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}>
           {/* Month/Year Header */}
           <div className="flex items-center justify-between mb-4">
             <button

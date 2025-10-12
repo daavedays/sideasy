@@ -106,6 +106,13 @@ const OwnerDash: React.FC = () => {
       color: 'from-blue-600 to-cyan-600'
     },
     {
+      title: 'תורנות ראשית',
+      description: 'יצירה ועריכה של לוח משמרות ראשי',
+      icon: '📅',
+      onClick: () => navigate('/owner/primary-tasks'),
+      color: 'from-indigo-600 to-purple-600'
+    },
+    {
       title: 'הגדרות משימות',
       description: 'נהל משימות משניות וראשיות למחלקה',
       icon: '⚙️',
