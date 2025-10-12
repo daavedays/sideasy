@@ -39,12 +39,25 @@ service cloud.firestore {
       allow update: if isAuthenticated() 
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
       
-      // Allow owner to update users in their department (limited fields)
+      // Allow owner to approve/update users in their department
+      // Owner can approve admins and workers in their department
       allow update: if isAuthenticated()
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'owner'
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.departmentId == resource.data.departmentId
+        && request.resource.data.role != 'owner'  // Can't update other owners
+        && request.resource.data.role != 'developer'  // Can't update developers
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['userId', 'departmentId', 'status', 'approvedBy', 'approvedAt']);
+          .hasAny(['userId', 'departmentId', 'role', 'email']);
+      
+      // Allow admin to approve workers in their department
+      // Admin can ONLY approve workers (not other admins or owners)
+      allow update: if isAuthenticated()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.departmentId == resource.data.departmentId
+        && resource.data.role == 'worker'  // Can ONLY update workers
+        && request.resource.data.role == 'worker'  // Can't change role
+        && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['userId', 'departmentId', 'role', 'email']);
       
       // Allow delete if user is developer
       allow delete: if isAuthenticated()
@@ -56,22 +69,38 @@ service cloud.firestore {
     // ============================================
     
     match /departments/{departmentId} {
-      // Anyone authenticated can read departments
-      allow read: if isAuthenticated();
+      // Helper: Get user data
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+      
+      // ANYONE can read departments (needed for signup form to show department list)
+      // This is safe because departments only contain: name, type, ownerId, counts
+      // No sensitive data is exposed
+      allow read: if true;
       
       // Only developer can create departments
       allow create: if isAuthenticated()
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
+        && getUserData().role == 'developer';
       
-      // Developer and department owner can update
-      allow update: if isAuthenticated() && (
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer'
-        || resource.data.ownerId == request.auth.uid
-      );
+      // Developer can update any department
+      allow update: if isAuthenticated() && getUserData().role == 'developer';
+      
+      // Owner can update their own department (all fields)
+      allow update: if isAuthenticated() 
+        && getUserData().role == 'owner'
+        && getUserData().departmentId == departmentId
+        && resource.data.ownerId == request.auth.uid;
+      
+      // Admin can update department counts (adminCount, workerCount) in their department
+      allow update: if isAuthenticated()
+        && getUserData().role == 'admin'
+        && getUserData().departmentId == departmentId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['adminCount', 'workerCount', 'updatedAt']);
       
       // Only developer can delete
       allow delete: if isAuthenticated()
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
+        && getUserData().role == 'developer';
     }
     
     // ============================================
@@ -128,6 +157,10 @@ service cloud.firestore {
       // Owner can create/update/delete workers in their department
       allow create, update, delete: if isAuthenticated() && isOwnerOfDepartment();
       
+      // Admin can create worker documents (only for workers, not admins/owners) in their department
+      allow create: if isAuthenticated() && isAdminOfDepartment()
+        && request.resource.data.role == 'worker';
+      
       // Admin can update qualifications, closing intervals, and schedule-related fields for workers
       allow update: if isAuthenticated() && isAdminOfDepartment()
         && resource.data.role == 'worker'  // Can only update workers (not admins)
@@ -136,6 +169,7 @@ service cloud.firestore {
           'closingIntervals',
           'updatedAt',
           'mandatoryClosingDates',
+          'optimalClosingDates',
           'lastClosingDate',
           'completedMainTasks',
           'completedSecondaryTasks',

@@ -34,6 +34,7 @@ export interface TaskEntry {
   taskName: string;
   startDate: Timestamp;
   endDate: Timestamp;
+  scheduleId?: string;  // Optional for backward compatibility with existing data
 }
 
 export interface WorkerData {
@@ -48,6 +49,7 @@ export interface WorkerData {
   score: number;
   lastClosingDate: Timestamp | null;
   mandatoryClosingDates: Timestamp[];
+  optimalClosingDates: Timestamp[];  // Calculated optimal closing dates based on interval
   qualifications: string[];
   closingIntervals: number;
   preferences: {
@@ -221,6 +223,7 @@ export async function createWorkerDocument(
       score: 0,
       lastClosingDate: null,
       mandatoryClosingDates: [],
+      optimalClosingDates: [],  // Calculated closing dates (initially empty)
       qualifications: [],
       closingIntervals: 0,
       preferences: [],

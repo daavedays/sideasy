@@ -552,19 +552,22 @@ const getAllFridayDates = (startDate: Date, endDate: Date): Date[] => {
  * 
  * @param departmentId - Department ID
  * @param workerId - Worker ID
- * @param _scheduleId - Schedule ID (unused but kept for backward compatibility)
+ * @param scheduleId - Schedule ID (used to remove old entries when editing)
  * @param assignments - All assignments for this worker from the schedule
  * @param taskDefinitions - Task definitions to get task names (passed from parent)
+ * @param isEdit - Whether this is editing an existing schedule
  */
 const updateWorkerTaskData = async (
   departmentId: string,
   workerId: string,
-  _scheduleId: string,
+  scheduleId: string,
   assignments: Assignment[],
-  taskDefinitions: Map<string, string>
+  taskDefinitions: Map<string, string>,
+  isEdit: boolean = false
 ): Promise<void> => {
   try {
-    console.log(`🔍 [updateWorkerTaskData] Starting update for worker ${workerId}`);
+    console.log(`🔍 [updateWorkerTaskData] Starting update for worker ${workerId} (${isEdit ? 'EDIT' : 'NEW'})`);
+    console.log(`🔍 Schedule ID: ${scheduleId}`);
     console.log(`🔍 Received ${assignments.length} assignments`);
     
     const workerRef = doc(db, 'departments', departmentId, 'workers', workerId);
@@ -585,6 +588,29 @@ const updateWorkerTaskData = async (
     console.log(`🔍 Existing primary tasks: ${existingPrimaryTasks.length}`);
     console.log(`🔍 Existing totalMainTasks: ${existingTotalMainTasks}`);
 
+    // If editing, remove old tasks from THIS schedule
+    let filteredExistingTasks = existingPrimaryTasks;
+    let removedTaskCount = 0;
+    
+    if (isEdit) {
+      // Filter out tasks from this schedule
+      // Note: Tasks without scheduleId are legacy data from before we added tracking
+      filteredExistingTasks = existingPrimaryTasks.filter(task => {
+        // Keep tasks that have a different scheduleId (from other schedules)
+        if (task.scheduleId && task.scheduleId !== scheduleId) {
+          return true;
+        }
+        // Remove tasks from this schedule
+        if (task.scheduleId === scheduleId) {
+          return false;
+        }
+        // For legacy tasks without scheduleId, keep them (they're from old schedules)
+        return true;
+      });
+      removedTaskCount = existingPrimaryTasks.length - filteredExistingTasks.length;
+      console.log(`🔍 [EDIT MODE] Removed ${removedTaskCount} old tasks from schedule ${scheduleId}`);
+    }
+
     // Build new task entries from assignments
     const newTaskEntries: TaskEntry[] = [];
     const allFridays = new Set<string>(); // ISO strings for deduplication
@@ -596,11 +622,12 @@ const updateWorkerTaskData = async (
       
       console.log(`🔍 Processing assignment: taskId=${taskId}, taskName=${taskName}, startDate=${startDate.toISOString()}, endDate=${endDate.toISOString()}`);
 
-      // Create task entry
+      // Create task entry with scheduleId
       newTaskEntries.push({
         taskName,
         startDate: Timestamp.fromDate(startDate),
         endDate: Timestamp.fromDate(endDate),
+        scheduleId,  // Add scheduleId for future tracking
       });
 
       // Get ALL Fridays if task spans Friday + Saturday
@@ -624,8 +651,8 @@ const updateWorkerTaskData = async (
     console.log(`🔍 Created ${newTaskEntries.length} new task entries`);
     console.log(`🔍 Found ${allFridays.size} new Friday dates`);
 
-    // Merge with existing tasks (append new ones)
-    const allPrimaryTasks = [...existingPrimaryTasks, ...newTaskEntries];
+    // Merge filtered existing tasks with new ones (replace old schedule data with new)
+    const allPrimaryTasks = [...filteredExistingTasks, ...newTaskEntries];
 
     // Split into completed vs ongoing based on current date
     const completedMainTasks: TaskEntry[] = [];
@@ -640,18 +667,51 @@ const updateWorkerTaskData = async (
       }
     });
 
-    // Recalculate totalMainTasks (cumulative count, never decreases)
-    const newTotalMainTasks = existingTotalMainTasks + assignments.length;
+    // Recalculate totalMainTasks
+    // When editing: recalculate based on filtered tasks + new tasks
+    // When creating new: increment from existing
+    const newTotalMainTasks = isEdit 
+      ? (filteredExistingTasks.length + newTaskEntries.length)
+      : (existingTotalMainTasks + assignments.length);
 
-    // Get existing mandatory closing dates and merge with new ones
-    const existingFridays = (workerData.mandatoryClosingDates || []) as Timestamp[];
-    existingFridays.forEach(ts => allFridays.add(ts.toDate().toISOString()));
-
-    // Convert Friday ISO strings to Timestamps (sorted)
-    const mandatoryDatesArray = Array.from(allFridays)
-      .map(isoString => new Date(isoString))
-      .sort((a, b) => a.getTime() - b.getTime())
-      .map(date => Timestamp.fromDate(date));
+    // Handle mandatory closing dates
+    // When editing: we can't easily separate Friday dates by schedule, so we recalculate from scratch
+    // by looking at all tasks in scheduleTaskMap.primaryTasks
+    let mandatoryDatesArray: Timestamp[];
+    
+    if (isEdit) {
+      // Recalculate ALL mandatory closing dates from ALL tasks (including new ones)
+      const allTasksForFridayCheck = [...filteredExistingTasks, ...newTaskEntries];
+      const allFridaysRecalculated = new Set<string>();
+      
+      for (const task of allTasksForFridayCheck) {
+        const taskStart = task.startDate.toDate();
+        const taskEnd = task.endDate.toDate();
+        
+        if (spansFridayAndSaturday(taskStart, taskEnd)) {
+          const fridays = getAllFridayDates(taskStart, taskEnd);
+          fridays.forEach(friday => {
+            allFridaysRecalculated.add(friday.toISOString());
+          });
+        }
+      }
+      
+      mandatoryDatesArray = Array.from(allFridaysRecalculated)
+        .map(isoString => new Date(isoString))
+        .sort((a, b) => a.getTime() - b.getTime())
+        .map(date => Timestamp.fromDate(date));
+      
+      console.log(`🔍 [EDIT MODE] Recalculated ${mandatoryDatesArray.length} mandatory closing dates from ${allTasksForFridayCheck.length} tasks`);
+    } else {
+      // For new schedules, merge with existing mandatory dates
+      const existingFridays = (workerData.mandatoryClosingDates || []) as Timestamp[];
+      existingFridays.forEach(ts => allFridays.add(ts.toDate().toISOString()));
+      
+      mandatoryDatesArray = Array.from(allFridays)
+        .map(isoString => new Date(isoString))
+        .sort((a, b) => a.getTime() - b.getTime())
+        .map(date => Timestamp.fromDate(date));
+    }
 
     // Calculate lastClosingDate (most recent Friday from mandatoryClosingDates)
     const lastClosingDate = mandatoryDatesArray.length > 0
@@ -718,11 +778,14 @@ export const saveScheduleWithWorkerUpdates = async (
   existingScheduleId?: string
 ): Promise<string> => {
   try {
+    console.log(`🔍 [saveScheduleWithWorkerUpdates] Called with existingScheduleId: ${existingScheduleId || 'undefined'}`);
+    
     let scheduleId = existingScheduleId;
 
     // Step 1: Create or update schedule metadata
     if (scheduleId) {
       // Update existing schedule
+      console.log(`🔍 UPDATING existing schedule: ${scheduleId}`);
       await updateScheduleMetadata(departmentId, scheduleId, {
         startDate,
         endDate,
@@ -731,6 +794,7 @@ export const saveScheduleWithWorkerUpdates = async (
       });
     } else {
       // Create new schedule
+      console.log(`🔍 CREATING new schedule (no existingScheduleId provided)`);
       scheduleId = await createPrimarySchedule(
         departmentId,
         departmentName,
@@ -740,6 +804,7 @@ export const saveScheduleWithWorkerUpdates = async (
         weeks.length,
         createdBy
       );
+      console.log(`🔍 Created new schedule with ID: ${scheduleId}`);
     }
 
     // Step 2: Save all period assignments
@@ -774,17 +839,82 @@ export const saveScheduleWithWorkerUpdates = async (
       console.log(`🔍 Worker ${workerId} has ${workerAssignments.length} assignments`);
     });
 
-    // Step 5: Update each worker's data (in parallel for performance)
+    // Step 5: If editing, find workers who HAD assignments but DON'T anymore (need cleanup)
+    const isEdit = !!existingScheduleId;
+    const workersToCleanup = new Set<string>();
+    
+    if (isEdit && existingScheduleId) {
+      try {
+        const originalAssignments = await getScheduleAssignments(departmentId, existingScheduleId);
+        const originalWorkerIds = new Set<string>();
+        
+        originalAssignments.forEach((assignment) => {
+          originalWorkerIds.add(assignment.workerId);
+        });
+        
+        // Find workers who had assignments but don't anymore
+        originalWorkerIds.forEach((workerId) => {
+          if (!assignmentsByWorker.has(workerId)) {
+            workersToCleanup.add(workerId);
+            console.log(`🔍 Worker ${workerId} had assignments in old schedule but not in new one - will cleanup`);
+          }
+        });
+      } catch (error) {
+        console.warn('Could not load original assignments for cleanup check:', error);
+      }
+    }
+
+    // Step 6: Update each worker's data (in parallel for performance)
     const workerUpdatePromises: Promise<void>[] = [];
+    
+    // Update workers with assignments
     assignmentsByWorker.forEach((workerAssignments, workerId) => {
       workerUpdatePromises.push(
-        updateWorkerTaskData(departmentId, workerId, scheduleId, workerAssignments, taskDefinitionsMap)
+        updateWorkerTaskData(departmentId, workerId, scheduleId, workerAssignments, taskDefinitionsMap, isEdit)
+      );
+    });
+    
+    // Cleanup workers who had assignments removed
+    workersToCleanup.forEach((workerId) => {
+      workerUpdatePromises.push(
+        updateWorkerTaskData(departmentId, workerId, scheduleId, [], taskDefinitionsMap, isEdit)
       );
     });
 
     await Promise.all(workerUpdatePromises);
 
-    console.log(`✅ Schedule ${scheduleId} saved with updates for ${assignmentsByWorker.size} workers`);
+    console.log(`✅ Schedule ${scheduleId} saved with updates for ${assignmentsByWorker.size} workers (${workersToCleanup.size} cleaned up)`);
+    
+    // Step 7: Calculate and update optimal closing dates for affected workers
+    try {
+      const { updateOptimalClosingDates } = await import('./closingScheduleUpdater');
+      
+      // Load original assignments for comparison (already loaded if editing)
+      const originalAssignmentsMap = new Map<string, Assignment>();
+      if (isEdit && existingScheduleId) {
+        try {
+          const loadedOriginal = await getScheduleAssignments(departmentId, existingScheduleId);
+          loadedOriginal.forEach((assignment, key) => {
+            originalAssignmentsMap.set(key, assignment);
+          });
+        } catch (error) {
+          console.warn('Could not load original assignments for closing date calculation:', error);
+        }
+      }
+      
+      const updatedWorkerIds = await updateOptimalClosingDates(
+        departmentId,
+        originalAssignmentsMap,
+        assignments,
+        weeks
+      );
+      
+      console.log(`✅ Updated optimal closing dates for ${updatedWorkerIds.length} workers`);
+    } catch (error) {
+      // Don't fail the entire save if closing date calculation fails
+      console.error('⚠️ Error calculating optimal closing dates (schedule still saved):', error);
+    }
+    
     return scheduleId;
   } catch (error) {
     console.error('Error saving schedule with worker updates:', error);

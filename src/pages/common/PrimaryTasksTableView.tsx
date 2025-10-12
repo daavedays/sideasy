@@ -67,6 +67,7 @@ const PrimaryTasksTableView: React.FC = () => {
   const [originalAssignments, setOriginalAssignments] = useState<Map<string, Assignment>>(new Map());
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCalculatingClosing, setIsCalculatingClosing] = useState(false);
 
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -79,6 +80,8 @@ const PrimaryTasksTableView: React.FC = () => {
 
   // Initialize schedule from location state
   useEffect(() => {
+    console.log(`🔍 [useEffect-init] Running with state.scheduleId: ${state?.scheduleId || 'undefined'}`);
+    
     if (!state || !state.startDate || !state.endDate) {
       // No state provided, redirect back
       navigate(-1);
@@ -100,7 +103,10 @@ const PrimaryTasksTableView: React.FC = () => {
     
     // Set schedule ID if editing existing schedule
     if (state.scheduleId) {
+      console.log(`🔍 [useEffect-init] Setting scheduleId from state: ${state.scheduleId}`);
       setScheduleId(state.scheduleId);
+    } else {
+      console.log(`🔍 [useEffect-init] No scheduleId in state, creating new schedule`);
     }
   }, [state, navigate]);
 
@@ -309,7 +315,11 @@ const PrimaryTasksTableView: React.FC = () => {
       return;
     }
 
+    console.log(`🔍 [handleSaveSchedule] Current scheduleId state: ${scheduleId || 'undefined'}`);
+    console.log(`🔍 [handleSaveSchedule] Mode: ${scheduleId ? 'EDIT' : 'CREATE'}`);
+
     setIsSaving(true);
+    setIsCalculatingClosing(true);
 
     try {
       // Parse dates from state
@@ -319,7 +329,9 @@ const PrimaryTasksTableView: React.FC = () => {
       const startDateObj = new Date(startYear, startMonth - 1, startDay);
       const endDateObj = new Date(endYear, endMonth - 1, endDay);
 
-      // Save schedule with worker updates
+      console.log(`🔍 [handleSaveSchedule] Calling saveScheduleWithWorkerUpdates with scheduleId: ${scheduleId || 'undefined'}`);
+
+      // Save schedule with worker updates (includes optimal closing date calculation)
       const savedScheduleId = await saveScheduleWithWorkerUpdates(
         departmentId,
         departmentName,
@@ -332,17 +344,20 @@ const PrimaryTasksTableView: React.FC = () => {
         scheduleId
       );
 
+      console.log(`🔍 [handleSaveSchedule] Save completed, savedScheduleId: ${savedScheduleId}`);
+
       // Update state
       setScheduleId(savedScheduleId);
       setOriginalAssignments(new Map(assignments)); // Update baseline
       setHasUnsavedChanges(false);
 
-      alert(scheduleId ? 'תורנות עודכנה בהצלחה!' : 'תורנות נשמרה בהצלחה!');
+      alert(scheduleId ? 'תורנות ותאריכי סגירה עודכנו בהצלחה!' : 'תורנות ותאריכי סגירה נשמרו בהצלחה!');
     } catch (error) {
       console.error('Error saving schedule:', error);
       alert('שגיאה בשמירת תורנות');
     } finally {
       setIsSaving(false);
+      setIsCalculatingClosing(false);
     }
   };
 
@@ -426,27 +441,38 @@ const PrimaryTasksTableView: React.FC = () => {
               </div>
 
               {/* Action Buttons */}
-              <div className="flex flex-wrap gap-4 justify-center">
-                {hasUnsavedChanges && (
-                  <Button
-                    onClick={handleSaveSchedule}
-                    disabled={isSaving}
-                    className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isSaving ? '⏳ שומר...' : scheduleId ? '💾 עדכן תורנות' : '💾 שמור תורנות'}
-                  </Button>
-                )}
-                {!hasUnsavedChanges && scheduleId && (
-                  <div className="px-8 py-3 bg-green-600/20 border border-green-500/50 rounded-xl text-green-300 font-semibold">
-                    ✅ כל השינויים נשמרו
+              <div className="flex flex-col gap-4 items-center">
+                {/* Loading Indicator */}
+                {isSaving && (
+                  <div className="px-8 py-3 bg-blue-600/20 border border-blue-500/50 rounded-xl text-blue-300 font-semibold animate-pulse">
+                    {isCalculatingClosing ? '🧮 מחשב תאריכי סגירה מיטביים...' : '💾 שומר נתונים...'}
                   </div>
                 )}
-                <Button
-                  onClick={handleExportCSV}
-                  className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 px-8 py-3"
-                >
-                  📥 ייצא לאקסל
-                </Button>
+                
+                {/* Buttons */}
+                <div className="flex flex-wrap gap-4 justify-center">
+                  {hasUnsavedChanges && (
+                    <Button
+                      onClick={handleSaveSchedule}
+                      disabled={isSaving}
+                      className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isSaving ? '⏳ שומר...' : scheduleId ? '💾 עדכן תורנות' : '💾 שמור תורנות'}
+                    </Button>
+                  )}
+                  {!hasUnsavedChanges && scheduleId && !isSaving && (
+                    <div className="px-8 py-3 bg-green-600/20 border border-green-500/50 rounded-xl text-green-300 font-semibold">
+                      ✅ כל השינויים נשמרו
+                    </div>
+                  )}
+                  <Button
+                    onClick={handleExportCSV}
+                    disabled={isSaving}
+                    className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    📥 ייצא לאקסל
+                  </Button>
+                </div>
               </div>
             </div>
           ) : (

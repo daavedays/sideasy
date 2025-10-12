@@ -130,6 +130,12 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
       days.push(day);
     }
 
+    // Fill remaining cells to always have 6 rows (42 cells total) - keeps calendar height consistent
+    const totalCells = 42; // 6 rows × 7 days
+    while (days.length < totalCells) {
+      days.push(null);
+    }
+
     // Check if date is selected
     const isSelected = (day: number): boolean => {
       if (!value) return false;
@@ -153,7 +159,7 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
     };
 
     return (
-      <div className="grid grid-cols-7 gap-1">
+      <div className="grid grid-cols-7 grid-rows-6 gap-1">
         {days.map((day, index) => {
           // Calculate day of week (0=Sunday, 6=Saturday)
           const dayOfWeek = index % 7;
@@ -203,25 +209,27 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
 
       {/* Calendar Dropdown */}
       {isOpen && (
-        <div className={`absolute z-[9999] w-full min-w-[320px] bg-slate-900 backdrop-blur-xl rounded-2xl p-4 border-2 border-slate-500/70 shadow-[0_20px_60px_rgba(0,0,0,0.9)] ${showAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`} style={{ maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}>
-          {/* Month/Year Header */}
+        <div className={`absolute z-[9999] left-0 right-0 mx-auto w-[340px] sm:w-[380px] bg-slate-900 backdrop-blur-xl rounded-2xl p-4 border-2 border-slate-500/70 shadow-[0_20px_60px_rgba(0,0,0,0.9)] ${showAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
+          {/* Month/Year Header with fixed width to prevent arrow jumping */}
           <div className="flex items-center justify-between mb-4">
             <button
               onClick={() => changeMonth(1)}
-              className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors"
+              className="flex-shrink-0 w-10 h-10 flex items-center justify-center hover:bg-slate-700/50 rounded-lg transition-colors"
+              aria-label="חודש הבא"
             >
               <svg className="w-5 h-5 text-white rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
             </button>
             
-            <div className="text-white font-bold text-lg">
+            <div className="text-white font-bold text-lg text-center flex-1 min-w-0">
               {hebrewMonths[currentMonth.getMonth()]} {currentMonth.getFullYear()}
             </div>
             
             <button
               onClick={() => changeMonth(-1)}
-              className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors"
+              className="flex-shrink-0 w-10 h-10 flex items-center justify-center hover:bg-slate-700/50 rounded-lg transition-colors"
+              aria-label="חודש קודם"
             >
               <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -247,7 +255,7 @@ const HebrewDatePicker: React.FC<HebrewDatePickerProps> = ({
             })}
           </div>
 
-          {/* Calendar Grid */}
+          {/* Calendar Grid - Fixed height with 6 rows */}
           {renderCalendar()}
         </div>
       )}

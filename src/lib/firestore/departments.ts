@@ -1,6 +1,7 @@
 import { collection, doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { COLLECTIONS } from '../../config/appConfig';
+import { DEFAULT_CLOSING_CONFIG } from '../../types/closingSchedule.types';
 
 /**
  * Department Operations
@@ -15,9 +16,15 @@ import { COLLECTIONS } from '../../config/appConfig';
 export interface Department {
   id?: string;
   name: string;
+  type?: 'predefined' | 'custom';
   ownerId: string;
   createdAt: Date;
   updatedAt: Date;
+  closingScheduleConfig?: {
+    gapSlackWeeks: number;
+    allowSingleReliefMin1: boolean;
+    reliefMaxPerSchedule: number;
+  };
   settings?: {
     maxWorkers?: number;
     shiftTypes?: string[];
@@ -28,6 +35,7 @@ export const createDepartment = async (data: Omit<Department, 'id'>): Promise<st
   try {
     const docRef = await addDoc(collection(db, COLLECTIONS.DEPARTMENTS), {
       ...data,
+      closingScheduleConfig: data.closingScheduleConfig || DEFAULT_CLOSING_CONFIG,
       createdAt: new Date(),
       updatedAt: new Date()
     });
@@ -90,6 +98,58 @@ export const getDepartmentsByOwner = async (ownerId: string): Promise<Department
     })) as Department[];
   } catch (error) {
     console.error('Error getting departments by owner:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get all departments
+ * Used for displaying department options in signup form
+ */
+export const getAllDepartments = async (): Promise<Department[]> => {
+  try {
+    const querySnapshot = await getDocs(collection(db, COLLECTIONS.DEPARTMENTS));
+    
+    const departments = querySnapshot.docs.map(doc => {
+      return {
+        id: doc.id,
+        ...doc.data()
+      } as Department;
+    });
+    
+    return departments;
+  } catch (error) {
+    console.error('Error getting all departments:', error);
+    throw error;
+  }
+};
+
+/**
+ * Find department by name (case-insensitive)
+ * Used to check if a custom department name already exists
+ */
+export const getDepartmentByName = async (name: string): Promise<Department | null> => {
+  try {
+    const querySnapshot = await getDocs(collection(db, COLLECTIONS.DEPARTMENTS));
+    
+    // Search case-insensitive
+    const normalizedSearchName = name.trim().toLowerCase();
+    
+    for (const doc of querySnapshot.docs) {
+      const departmentData = doc.data();
+      const normalizedDeptName = departmentData.name?.toLowerCase() || '';
+      
+      if (normalizedDeptName === normalizedSearchName) {
+        return {
+          id: doc.id,
+          ...departmentData
+        } as Department;
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error finding department by name:', error);
     throw error;
   }
 };

@@ -24,6 +24,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../../config/firebase';
 import { DEPARTMENT_IDS } from '../../config/departmentIds';
+import { getDepartmentByName } from '../firestore/departments';
 
 /**
  * User data structure in Firestore
@@ -58,6 +59,14 @@ export async function signUp(
   customDepartmentName?: string
 ): Promise<{ success: boolean; message: string; userId?: string }> {
   try {
+    // Step 0: SECURITY CHECK - Only owners can create new departments
+    if (departmentId === 'other' && customDepartmentName && role !== 'owner') {
+      return {
+        success: false,
+        message: 'רק בעלי מחלקות יכולים ליצור מחלקות חדשות'
+      };
+    }
+
     // Step 1: Create Firebase Auth user
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
@@ -70,9 +79,21 @@ export async function signUp(
     let departmentName = '';
     
     if (departmentId === 'other' && customDepartmentName) {
-      // Custom department - will be created after approval
-      finalDepartmentId = null;
-      departmentName = customDepartmentName;
+      
+      // Check if this custom department name already exists
+      const existingDepartment = await getDepartmentByName(customDepartmentName);
+      
+      if (existingDepartment) {
+        // Department already exists! Link to it
+        finalDepartmentId = existingDepartment.id || null;
+        departmentName = existingDepartment.name;
+        console.log(`✅ Found existing department: ${departmentName} (${finalDepartmentId})`);
+      } else {
+        // Custom department doesn't exist yet - will be created after approval (if owner)
+        finalDepartmentId = null;
+        departmentName = customDepartmentName;
+        console.log(`📝 New custom department will be created: ${departmentName}`);
+      }
     } else {
       // Map string keys to actual Firestore IDs
       const departmentKeyToId: Record<string, string> = {
@@ -88,8 +109,37 @@ export async function signUp(
         'medical': 'מרפאה'
       };
       
-      finalDepartmentId = departmentKeyToId[departmentId] || null;
-      departmentName = departmentNames[departmentId] || customDepartmentName || 'אחר';
+      // Check if it's a predefined key (ground_support, logistics, medical)
+      if (departmentKeyToId[departmentId]) {
+        finalDepartmentId = departmentKeyToId[departmentId];
+        departmentName = departmentNames[departmentId];
+        console.log(`✅ Using predefined department: ${departmentName} (${finalDepartmentId})`);
+      } else {
+        // It's an actual Firestore department ID - fetch department details
+        const deptRef = doc(db, 'departments', departmentId);
+        const deptDoc = await getDoc(deptRef);
+        
+        if (deptDoc.exists()) {
+          finalDepartmentId = departmentId;
+          departmentName = deptDoc.data().name || 'אחר';
+          console.log(`✅ Using existing department: ${departmentName} (${finalDepartmentId})`);
+        } else {
+          // Department ID doesn't exist - fall back to null
+          finalDepartmentId = null;
+          departmentName = customDepartmentName || 'אחר';
+          console.log(`⚠️ Department ID not found: ${departmentId}, using fallback`);
+        }
+      }
+    }
+
+    // Step 3.5: SECURITY CHECK - Admins and workers MUST have a valid department
+    if (role !== 'owner' && !finalDepartmentId) {
+      // Delete the auth user we just created (cleanup)
+      await user.delete();
+      return {
+        success: false,
+        message: 'מחלקה לא תקינה. אנא בחר מחלקה קיימת.'
+      };
     }
 
     // Step 4: Create Firestore user document

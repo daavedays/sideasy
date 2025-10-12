@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { signUp } from '../../lib/auth/authHelpers';
+import { getAllDepartments, Department } from '../../lib/firestore/departments';
 
 /**
  * Signup Form Component
@@ -24,17 +25,94 @@ const SignupForm: React.FC = () => {
   
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [showCustomDepartment, setShowCustomDepartment] = useState(false);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [departmentInput, setDepartmentInput] = useState('');
+  const [filteredDepartments, setFilteredDepartments] = useState<Department[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+  
+  // Ref for dropdown to handle click outside
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Fetch all departments on component mount
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const allDepts = await getAllDepartments();
+        setDepartments(allDepts);
+      } catch (error) {
+        console.error('Error fetching departments:', error);
+      }
+    };
+
+    fetchDepartments();
+  }, []);
+
+  // Filter departments as user types
+  useEffect(() => {
+    if (!departmentInput.trim()) {
+      setFilteredDepartments([]);
+      return;
+    }
+
+    const searchTerm = departmentInput.toLowerCase().trim();
+    const filtered = departments.filter(dept => 
+      dept.name.toLowerCase().includes(searchTerm)
+    );
+    
+    setFilteredDepartments(filtered);
+  }, [departmentInput, departments]);
+
+  // Handle click outside to close dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        // Close dropdown but keep the input value
+        setShowDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
-    
-    // Show custom department field if "other" is selected
-    if (name === 'department') {
-      setShowCustomDepartment(value === 'other');
+  };
+
+  const handleDepartmentInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setDepartmentInput(value);
+    setShowDropdown(value.trim().length > 0); // Show dropdown only if there's text
+    // Clear selection when user types
+    setFormData(prev => ({ ...prev, department: '', customDepartment: '' }));
+  };
+
+  const handleDepartmentInputFocus = () => {
+    // Show dropdown when input is focused and has text
+    if (departmentInput.trim().length > 0) {
+      setShowDropdown(true);
     }
   };
+
+  const handleDepartmentSelect = (dept: Department, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setDepartmentInput(dept.name);
+    setFormData(prev => ({ 
+      ...prev, 
+      department: dept.id || '',
+      customDepartment: ''
+    }));
+    // Hide dropdown after selection
+    setShowDropdown(false);
+    setFilteredDepartments([]);
+  };
+
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,18 +120,49 @@ const SignupForm: React.FC = () => {
     
     // Validation
     if (!formData.firstName || !formData.lastName || !formData.email || 
-        !formData.password || !formData.role || !formData.department) {
-      setMessage({ type: 'error', text: 'אנא מלא את כל השדות' });
+        !formData.password || !formData.role) {
+      setMessage({ type: 'error', text: 'אנא מלא את כל השדות הנדרשים' });
       return;
     }
-    
-    if (formData.department === 'other' && !formData.customDepartment) {
+
+    if (!departmentInput.trim()) {
       setMessage({ type: 'error', text: 'אנא הזן שם מחלקה' });
       return;
     }
     
     if (formData.password.length < 8) {
       setMessage({ type: 'error', text: 'הסיסמה חייבת להכיל לפחות 8 תווים' });
+      return;
+    }
+    
+    // Determine final department ID and custom name
+    let finalDepartmentId = formData.department;
+    let finalCustomDepartmentName = formData.customDepartment;
+    
+    // Check if department exists
+    const exactMatch = departments.find(d => d.name.toLowerCase() === departmentInput.toLowerCase());
+    
+    if (!exactMatch) {
+      // Department doesn't exist
+      if (formData.role === 'owner') {
+        // Owner can create new department
+        finalDepartmentId = 'other';
+        finalCustomDepartmentName = departmentInput;
+      } else {
+        setMessage({ 
+          type: 'error', 
+          text: 'מחלקה זו לא קיימת. רק בעלי מחלקות יכולים ליצור מחלקות חדשות.' 
+        });
+        return;
+      }
+    } else {
+      // Department exists - use its ID
+      finalDepartmentId = exactMatch.id || '';
+      finalCustomDepartmentName = '';
+    }
+    
+    if (!finalDepartmentId) {
+      setMessage({ type: 'error', text: 'אנא בחר מחלקה תקינה' });
       return;
     }
     
@@ -66,8 +175,8 @@ const SignupForm: React.FC = () => {
         formData.firstName,
         formData.lastName,
         formData.role as 'owner' | 'admin' | 'worker',
-        formData.department,
-        formData.customDepartment || undefined
+        finalDepartmentId,
+        finalCustomDepartmentName || undefined
       );
       
       if (result.success) {
@@ -82,7 +191,8 @@ const SignupForm: React.FC = () => {
           department: '',
           customDepartment: ''
         });
-        setShowCustomDepartment(false);
+        setDepartmentInput('');
+        setShowDropdown(false);
       } else {
         setMessage({ type: 'error', text: result.message });
       }
@@ -92,6 +202,7 @@ const SignupForm: React.FC = () => {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="space-y-6">
@@ -184,54 +295,70 @@ const SignupForm: React.FC = () => {
         </div>
 
         {/* Department Field */}
-        <div className="space-y-2">
-          <label htmlFor="department" className="block text-sm font-medium text-white/90">
+        <div className="space-y-2 relative" ref={dropdownRef}>
+          <label htmlFor="departmentSearch" className="block text-sm font-medium text-white/90">
             מחלקה
           </label>
-          <select
-            id="department"
-            name="department"
-            value={formData.department}
-            onChange={handleChange}
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-          >
-            <option value="" className="bg-gray-800 text-white">
-              בחר מחלקה
-            </option>
-            <option value="ground_support" className="bg-gray-800 text-white">
-              שירותי קרקע
-            </option>
-            <option value="logistics" className="bg-gray-800 text-white">
-              לוגיסטיקה
-            </option>
-            <option value="medical" className="bg-gray-800 text-white">
-              מרפאה
-            </option>
-            <option value="other" className="bg-gray-800 text-white">
-              אחר
-            </option>
-          </select>
+          
+          <input
+            type="text"
+            id="departmentSearch"
+            value={departmentInput}
+            onChange={handleDepartmentInputChange}
+            onFocus={handleDepartmentInputFocus}
+            placeholder="הקלד שם מחלקה..."
+            disabled={!formData.role}
+            autoComplete="off"
+            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm disabled:opacity-50"
+          />
+          
+          {/* Dropdown list with glassmorphism design */}
+          {showDropdown && departmentInput && departmentInput.trim().length > 0 && (
+            <div 
+              className="absolute w-full bg-gray-900/95 backdrop-blur-xl border border-white/30 rounded-xl mt-2 max-h-60 overflow-y-auto z-50 shadow-2xl animate-in fade-in slide-in-from-top-2 duration-200"
+              style={{
+                animation: 'slideDown 0.2s ease-out'
+              }}
+            >
+              {filteredDepartments.length > 0 ? (
+                filteredDepartments.map((dept) => (
+                  <div
+                    key={dept.id}
+                    onClick={(e) => handleDepartmentSelect(dept, e)}
+                    onMouseDown={(e) => e.preventDefault()}
+                    className="px-4 py-3 hover:bg-gradient-to-r hover:from-purple-600/30 hover:to-blue-600/30 cursor-pointer text-white text-right transition-all duration-200 border-b border-white/10 last:border-b-0 first:rounded-t-xl last:rounded-b-xl active:scale-[0.98]"
+                  >
+                    <span className="font-medium">{dept.name}</span>
+                  </div>
+                ))
+              ) : (
+                <div className={`px-4 py-3 text-right text-sm rounded-xl ${
+                  formData.role === 'owner' ? 'text-green-400/80' : 'text-red-400/80'
+                }`}>
+                  {formData.role === 'owner' 
+                    ? '✨ לא נמצאה מחלקה קיימת. תיווצר מחלקה חדשה בשם זה'
+                    : '❌ מחלקה לא נמצאה. רק בעלי מחלקות יכולים ליצור מחלקות חדשות'}
+                </div>
+              )}
+            </div>
+          )}
+          
+          {!formData.role && (
+            <p className="text-xs text-white/60">אנא בחר תפקיד תחילה</p>
+          )}
+          
+          {formData.role && formData.role !== 'owner' && (
+            <p className="text-xs text-white/60 mt-1">
+              💡 עליך לבחור מחלקה קיימת מהרשימה
+            </p>
+          )}
+          
+          {formData.role === 'owner' && (
+            <p className="text-xs text-green-400/60 mt-1">
+              ✨ כבעל מחלקה, תוכל ליצור מחלקה חדשה או לבחור קיימת
+            </p>
+          )}
         </div>
-
-        {/* Custom Department Field (shown when "other" is selected) */}
-        {showCustomDepartment && (
-          <div className="space-y-2">
-            <label htmlFor="customDepartment" className="block text-sm font-medium text-white/90">
-              שם מחלקה מותאם
-            </label>
-            <input
-              type="text"
-              id="customDepartment"
-              name="customDepartment"
-              value={formData.customDepartment}
-              onChange={handleChange}
-              placeholder="הכנס שם מחלקה"
-              required
-              className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            />
-          </div>
-        )}
 
         {/* Email Field */}
         <div className="space-y-2">
