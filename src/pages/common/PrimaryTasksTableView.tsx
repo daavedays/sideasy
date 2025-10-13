@@ -8,7 +8,7 @@
  * Purpose: Full-page view for primary task scheduling table
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../config/firebase';
@@ -52,6 +52,8 @@ const PrimaryTasksTableView: React.FC = () => {
 
   const state = location.state as LocationState;
 
+  // Use ref to persist scheduleId across re-renders (more reliable than state alone)
+  const scheduleIdRef = useRef<string | undefined>(undefined);
 
   // Schedule State
   const [scheduleId, setScheduleId] = useState<string | undefined>(undefined);
@@ -81,6 +83,7 @@ const PrimaryTasksTableView: React.FC = () => {
   // Initialize schedule from location state
   useEffect(() => {
     console.log(`🔍 [useEffect-init] Running with state.scheduleId: ${state?.scheduleId || 'undefined'}`);
+    console.log(`🔍 [useEffect-init] Current scheduleIdRef: ${scheduleIdRef.current || 'undefined'}`);
     
     if (!state || !state.startDate || !state.endDate) {
       // No state provided, redirect back
@@ -101,12 +104,16 @@ const PrimaryTasksTableView: React.FC = () => {
     setScheduleYear(getYear(startDateObj));
     setIncludeAdmins(state.includeAdmins);
     
-    // Set schedule ID if editing existing schedule
-    if (state.scheduleId) {
-      console.log(`🔍 [useEffect-init] Setting scheduleId from state: ${state.scheduleId}`);
-      setScheduleId(state.scheduleId);
+    // Set schedule ID if editing existing schedule OR if we already saved one
+    // Priority: 1. Already saved (ref), 2. From location state, 3. undefined (new schedule)
+    const effectiveScheduleId = scheduleIdRef.current || state.scheduleId;
+    
+    if (effectiveScheduleId) {
+      console.log(`🔍 [useEffect-init] Setting scheduleId: ${effectiveScheduleId}`);
+      scheduleIdRef.current = effectiveScheduleId;
+      setScheduleId(effectiveScheduleId);
     } else {
-      console.log(`🔍 [useEffect-init] No scheduleId in state, creating new schedule`);
+      console.log(`🔍 [useEffect-init] No scheduleId, creating new schedule`);
     }
   }, [state, navigate]);
 
@@ -315,8 +322,13 @@ const PrimaryTasksTableView: React.FC = () => {
       return;
     }
 
+    // Use the ref value as the source of truth (persists across re-renders)
+    const currentScheduleId = scheduleIdRef.current || scheduleId;
+    
     console.log(`🔍 [handleSaveSchedule] Current scheduleId state: ${scheduleId || 'undefined'}`);
-    console.log(`🔍 [handleSaveSchedule] Mode: ${scheduleId ? 'EDIT' : 'CREATE'}`);
+    console.log(`🔍 [handleSaveSchedule] Current scheduleIdRef: ${scheduleIdRef.current || 'undefined'}`);
+    console.log(`🔍 [handleSaveSchedule] Using scheduleId: ${currentScheduleId || 'undefined'}`);
+    console.log(`🔍 [handleSaveSchedule] Mode: ${currentScheduleId ? 'EDIT/UPDATE' : 'CREATE NEW'}`);
 
     setIsSaving(true);
     setIsCalculatingClosing(true);
@@ -329,7 +341,7 @@ const PrimaryTasksTableView: React.FC = () => {
       const startDateObj = new Date(startYear, startMonth - 1, startDay);
       const endDateObj = new Date(endYear, endMonth - 1, endDay);
 
-      console.log(`🔍 [handleSaveSchedule] Calling saveScheduleWithWorkerUpdates with scheduleId: ${scheduleId || 'undefined'}`);
+      console.log(`🔍 [handleSaveSchedule] Calling saveScheduleWithWorkerUpdates with scheduleId: ${currentScheduleId || 'undefined'}`);
 
       // Save schedule with worker updates (includes optimal closing date calculation)
       const savedScheduleId = await saveScheduleWithWorkerUpdates(
@@ -341,17 +353,21 @@ const PrimaryTasksTableView: React.FC = () => {
         weeks,
         assignments,
         user.uid,
-        scheduleId
+        currentScheduleId  // Use the current value from ref or state
       );
 
       console.log(`🔍 [handleSaveSchedule] Save completed, savedScheduleId: ${savedScheduleId}`);
 
-      // Update state
+      // CRITICAL: Update BOTH state and ref to persist scheduleId for subsequent saves
+      scheduleIdRef.current = savedScheduleId;
       setScheduleId(savedScheduleId);
       setOriginalAssignments(new Map(assignments)); // Update baseline
       setHasUnsavedChanges(false);
 
-      alert(scheduleId ? 'תורנות ותאריכי סגירה עודכנו בהצלחה!' : 'תורנות ותאריכי סגירה נשמרו בהצלחה!');
+      console.log(`✅ [handleSaveSchedule] Schedule ID persisted: ${savedScheduleId}`);
+      console.log(`✅ [handleSaveSchedule] Future saves will UPDATE this schedule, not create new ones`);
+
+      alert(currentScheduleId ? 'תורנות ותאריכי סגירה עודכנו בהצלחה!' : 'תורנות ותאריכי סגירה נשמרו בהצלחה!');
     } catch (error) {
       console.error('Error saving schedule:', error);
       alert('שגיאה בשמירת תורנות');

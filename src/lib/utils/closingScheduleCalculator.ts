@@ -81,7 +81,13 @@ export class ClosingScheduleCalculator {
       workerInput.mandatoryClosingDates,
       semesterWeeks
     );
-    calculationLog.push(`Mandatory closing weeks: ${requiredWeeks.join(', ') || 'none'}`);
+    
+    if (requiredWeeks.length > 0) {
+      calculationLog.push(`Mandatory closing dates: ${workerInput.mandatoryClosingDates.length} dates provided`);
+      calculationLog.push(`Matched to weeks: ${requiredWeeks.join(', ')}`);
+    } else {
+      calculationLog.push(`Mandatory closing weeks: none`);
+    }
     
     const totalWeeks = semesterWeeks.length;
     
@@ -283,17 +289,29 @@ export class ClosingScheduleCalculator {
   /**
    * Convert Date objects to week numbers (1-based)
    * 
-   * Matches dates against semesterWeeks array by comparing date values
+   * Matches dates against semesterWeeks array by comparing date values (year, month, day only)
+   * IMPORTANT: Ignores time component to handle timezone/time differences
    */
   private datesToWeekNumbers(dates: Date[], semesterWeeks: Date[]): number[] {
     const weekNumbers: number[] = [];
     
     for (const date of dates) {
-      const dateTime = date.getTime();
-      const weekIndex = semesterWeeks.findIndex(week => week.getTime() === dateTime);
+      // Normalize to date-only comparison (ignore time)
+      const targetYear = date.getFullYear();
+      const targetMonth = date.getMonth();
+      const targetDay = date.getDate();
+      
+      const weekIndex = semesterWeeks.findIndex(week => {
+        return week.getFullYear() === targetYear &&
+               week.getMonth() === targetMonth &&
+               week.getDate() === targetDay;
+      });
       
       if (weekIndex !== -1) {
         weekNumbers.push(weekIndex + 1); // Convert to 1-based
+      } else {
+        // Log warning if mandatory date doesn't match any week Friday
+        console.warn(`⚠️ Mandatory date ${date.toISOString()} (${targetYear}-${targetMonth+1}-${targetDay}) doesn't match any week Friday`);
       }
     }
     

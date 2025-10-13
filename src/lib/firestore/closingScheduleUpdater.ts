@@ -2,14 +2,14 @@
  * Closing Schedule Updater
  * 
  * Orchestrates the calculation and update of optimal closing dates for workers
- * when a primary schedule is saved.
+ * when a primary schedule is saved or edited.
  * 
  * This module:
  * 1. Detects which workers have changed assignments
- * 2. Extracts mandatory closing dates from weekend-spanning tasks
- * 3. Loads worker data (intervals, existing mandatory dates)
- * 4. Runs closing schedule calculator
- * 5. Updates Firestore with results
+ * 2. Loads worker data from Firestore (intervals, mandatoryClosingDates)
+ *    Note: mandatoryClosingDates are already recalculated by updateWorkerTaskData
+ * 3. Runs closing schedule calculator with actual mandatory dates
+ * 4. Updates only optimalClosingDates in Firestore
  * 
  * Location: src/lib/firestore/closingScheduleUpdater.ts
  */
@@ -20,10 +20,6 @@ import { Assignment } from '../../types/primarySchedule.types';
 import { WorkerData } from './workers';
 import { ClosingScheduleCalculator } from '../utils/closingScheduleCalculator';
 import { detectChangedWorkers } from '../utils/assignmentChangeDetector';
-import {
-  extractMandatoryClosingDates,
-  extractMandatoryClosingDatesForWorkers,
-} from '../utils/mandatoryClosingDateExtractor';
 import {
   ClosingScheduleConfig,
   WorkerClosingInput,
@@ -37,6 +33,7 @@ import {
  * @param originalAssignments - Assignments before edits
  * @param newAssignments - Assignments after edits
  * @param weeks - All weeks in the schedule (with Friday dates)
+ * @param workerMandatoryDates - Map of workerId to their mandatory closing dates (from updateWorkerTaskData)
  * @param config - Optional algorithm configuration (uses department defaults if not provided)
  * @returns Array of updated worker IDs
  */
@@ -45,6 +42,7 @@ export async function updateOptimalClosingDates(
   originalAssignments: Map<string, Assignment>,
   newAssignments: Map<string, Assignment>,
   weeks: Array<{ weekNumber: number; startDate: Date; endDate: Date }>,
+  workerMandatoryDates: Map<string, Date[]>,
   config?: ClosingScheduleConfig
 ): Promise<string[]> {
   console.log('🧮 Starting optimal closing date calculation...');
@@ -60,36 +58,39 @@ export async function updateOptimalClosingDates(
       return [];
     }
     
-    // 2. Extract mandatory closing dates for changed workers only
-    const mandatoryClosingDates = extractMandatoryClosingDatesForWorkers(
-      newAssignments,
-      weeks,
-      changedWorkerIds
-    );
-    console.log(`📅 Extracted mandatory closing dates for ${mandatoryClosingDates.size} workers`);
-    
-    // 3. Load department config if not provided
+    // 2. Load department config if not provided
     let finalConfig = config;
     if (!finalConfig) {
       finalConfig = await loadDepartmentClosingConfig(departmentId);
     }
     
-    // 4. Initialize calculator
+    // 3. Initialize calculator
     const calculator = new ClosingScheduleCalculator(finalConfig);
     
-    // 5. Extract all Friday dates from weeks
-    const fridayDates = weeks.map(w => w.endDate); // Assuming endDate is Friday
-    console.log(`📆 Schedule has ${fridayDates.length} weeks (Fridays)`);
+    // 4. Extract all Friday dates from weeks
+    // IMPORTANT: weeks are Sunday-Saturday, so endDate is Saturday. Friday is one day before.
+    const fridayDates = weeks.map(w => {
+      const friday = new Date(w.endDate);
+      friday.setDate(friday.getDate() - 1); // Saturday - 1 day = Friday
+      friday.setHours(12, 0, 0, 0); // Normalize to 12:00 noon for consistency
+      return friday;
+    });
+    console.log(`📆 Schedule has ${fridayDates.length} weeks (Fridays extracted from Saturdays)`);
     
-    // 6. Process each changed worker
+    // 5. Process each changed worker
+    // Use mandatory dates directly from workerMandatoryDates map (passed from parent)
+    // This avoids Firestore cache issues when reading immediately after writing
     const updatePromises: Promise<void>[] = [];
     const updatedWorkerIds: string[] = [];
     
     for (const workerId of changedWorkerIds) {
+      const mandatoryDates = workerMandatoryDates.get(workerId) || [];
+      console.log(`🔍 Worker ${workerId}: using ${mandatoryDates.length} mandatory dates from fresh data`);
+      
       const updatePromise = processWorkerClosingSchedule(
         departmentId,
         workerId,
-        mandatoryClosingDates.get(workerId) || [],
+        mandatoryDates,
         fridayDates,
         calculator
       ).then((success) => {
@@ -101,7 +102,7 @@ export async function updateOptimalClosingDates(
       updatePromises.push(updatePromise);
     }
     
-    // 7. Wait for all updates to complete
+    // 6. Wait for all updates to complete
     await Promise.all(updatePromises);
     
     console.log(`✅ Successfully updated ${updatedWorkerIds.length}/${changedWorkerIds.size} workers`);
@@ -116,9 +117,12 @@ export async function updateOptimalClosingDates(
 /**
  * Process closing schedule calculation for a single worker
  * 
+ * Uses the provided mandatoryClosingDates (from updateWorkerTaskData) to calculate
+ * optimal closing dates based on the worker's interval.
+ * 
  * @param departmentId - Department ID
  * @param workerId - Worker ID
- * @param mandatoryDates - Mandatory closing Friday dates
+ * @param mandatoryDates - Mandatory closing Friday dates (from updateWorkerTaskData)
  * @param fridayDates - All Friday dates in schedule
  * @param calculator - Calculator instance
  * @returns True if update was successful
@@ -143,13 +147,16 @@ async function processWorkerClosingSchedule(
     const workerData = workerSnap.data() as WorkerData;
     const workerName = `${workerData.firstName} ${workerData.lastName}`;
     
+    // Use the provided mandatoryDates (passed from updateWorkerTaskData)
+    // This avoids Firestore cache issues and ensures we're using fresh data
+    console.log(`🔍 Worker ${workerName}: received ${mandatoryDates.length} mandatory closing dates from fresh update`);
+    
     // Skip if interval is 0 (never closes)
     if (workerData.closingIntervals === 0) {
       console.log(`⏭️ Skipping ${workerName} (interval = 0, never closes)`);
       
-      // Still update mandatory dates even if they never close
+      // Only update optimal dates (mandatory dates already set by updateWorkerTaskData)
       await updateDoc(workerRef, {
-        mandatoryClosingDates: mandatoryDates.map(d => Timestamp.fromDate(d)),
         optimalClosingDates: [],
         updatedAt: Timestamp.now(),
       });
@@ -157,7 +164,7 @@ async function processWorkerClosingSchedule(
       return true;
     }
     
-    // Prepare input for calculator
+    // Prepare input for calculator using provided mandatory dates
     const workerInput: WorkerClosingInput = {
       workerId,
       workerName,
@@ -177,9 +184,9 @@ async function processWorkerClosingSchedule(
       console.warn(`  ⚠️ Alerts for ${workerName}:`, result.userAlerts);
     }
     
-    // Update Firestore
+    // Update Firestore - only update optimalClosingDates
+    // (mandatoryClosingDates already updated by updateWorkerTaskData)
     await updateDoc(workerRef, {
-      mandatoryClosingDates: mandatoryDates.map(d => Timestamp.fromDate(d)),
       optimalClosingDates: result.optimalDates.map(d => Timestamp.fromDate(d)),
       updatedAt: Timestamp.now(),
     });

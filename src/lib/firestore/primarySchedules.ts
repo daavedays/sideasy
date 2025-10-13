@@ -556,6 +556,7 @@ const getAllFridayDates = (startDate: Date, endDate: Date): Date[] => {
  * @param assignments - All assignments for this worker from the schedule
  * @param taskDefinitions - Task definitions to get task names (passed from parent)
  * @param isEdit - Whether this is editing an existing schedule
+ * @returns Array of mandatory closing Friday dates (for closing calculator)
  */
 const updateWorkerTaskData = async (
   departmentId: string,
@@ -564,7 +565,7 @@ const updateWorkerTaskData = async (
   assignments: Assignment[],
   taskDefinitions: Map<string, string>,
   isEdit: boolean = false
-): Promise<void> => {
+): Promise<Date[]> => {
   try {
     console.log(`🔍 [updateWorkerTaskData] Starting update for worker ${workerId} (${isEdit ? 'EDIT' : 'NEW'})`);
     console.log(`🔍 Schedule ID: ${scheduleId}`);
@@ -575,7 +576,7 @@ const updateWorkerTaskData = async (
 
     if (!workerSnap.exists()) {
       console.warn(`Worker ${workerId} not found, skipping update`);
-      return;
+      return []; // Return empty array if worker not found
     }
 
     const workerData = workerSnap.data();
@@ -697,7 +698,11 @@ const updateWorkerTaskData = async (
       }
       
       mandatoryDatesArray = Array.from(allFridaysRecalculated)
-        .map(isoString => new Date(isoString))
+        .map(isoString => {
+          const date = new Date(isoString);
+          date.setHours(12, 0, 0, 0); // Normalize to 12:00 noon
+          return date;
+        })
         .sort((a, b) => a.getTime() - b.getTime())
         .map(date => Timestamp.fromDate(date));
       
@@ -708,7 +713,11 @@ const updateWorkerTaskData = async (
       existingFridays.forEach(ts => allFridays.add(ts.toDate().toISOString()));
       
       mandatoryDatesArray = Array.from(allFridays)
-        .map(isoString => new Date(isoString))
+        .map(isoString => {
+          const date = new Date(isoString);
+          date.setHours(12, 0, 0, 0); // Normalize to 12:00 noon
+          return date;
+        })
         .sort((a, b) => a.getTime() - b.getTime())
         .map(date => Timestamp.fromDate(date));
     }
@@ -745,9 +754,17 @@ const updateWorkerTaskData = async (
 
     await updateDoc(workerRef, updates);
     console.log(`✅ Updated worker ${workerId}: ${newTotalMainTasks} total tasks, ${completedMainTasks.length} completed, ${mandatoryDatesArray.length} closing dates`);
+    
+    // Return mandatory dates as Date objects (normalized to noon Israel time for consistency)
+    return mandatoryDatesArray.map(ts => {
+      const date = ts.toDate();
+      // Set to 12:00 noon Israel time (UTC+2/+3 depending on DST, using +2 for consistency)
+      date.setHours(12, 0, 0, 0);
+      return date;
+    });
   } catch (error) {
     console.error(`Error updating worker ${workerId} task data:`, error);
-    throw error;
+    return []; // Return empty array on error (don't block closing calculation)
   }
 };
 
@@ -782,7 +799,22 @@ export const saveScheduleWithWorkerUpdates = async (
     
     let scheduleId = existingScheduleId;
 
-    // Step 1: Create or update schedule metadata
+    // Step 1: Load original assignments BEFORE updating (for change detection)
+    const originalAssignmentsMap = new Map<string, Assignment>();
+    if (existingScheduleId) {
+      try {
+        console.log(`🔍 Loading original assignments from existing schedule: ${existingScheduleId}`);
+        const loadedOriginal = await getScheduleAssignments(departmentId, existingScheduleId);
+        loadedOriginal.forEach((assignment, key) => {
+          originalAssignmentsMap.set(key, assignment);
+        });
+        console.log(`🔍 Loaded ${originalAssignmentsMap.size} original assignments for comparison`);
+      } catch (error) {
+        console.warn('Could not load original assignments for change detection:', error);
+      }
+    }
+
+    // Step 2: Create or update schedule metadata
     if (scheduleId) {
       // Update existing schedule
       console.log(`🔍 UPDATING existing schedule: ${scheduleId}`);
@@ -807,10 +839,10 @@ export const saveScheduleWithWorkerUpdates = async (
       console.log(`🔍 Created new schedule with ID: ${scheduleId}`);
     }
 
-    // Step 2: Save all period assignments
+    // Step 3: Save all period assignments
     await saveAllPeriodAssignments(departmentId, scheduleId, assignments, weeks);
 
-    // Step 3: Load task definitions to get task names
+    // Step 4: Load task definitions to get task names
     const { getTaskDefinitions } = await import('./taskDefinitions');
     const taskDefs = await getTaskDefinitions(departmentId);
     
@@ -822,7 +854,7 @@ export const saveScheduleWithWorkerUpdates = async (
       });
     }
 
-    // Step 4: Group assignments by worker
+    // Step 5: Group assignments by worker
     console.log(`🔍 [saveScheduleWithWorkerUpdates] Total assignments in map: ${assignments.size}`);
     
     const assignmentsByWorker = new Map<string, Assignment[]>();
@@ -839,74 +871,61 @@ export const saveScheduleWithWorkerUpdates = async (
       console.log(`🔍 Worker ${workerId} has ${workerAssignments.length} assignments`);
     });
 
-    // Step 5: If editing, find workers who HAD assignments but DON'T anymore (need cleanup)
+    // Step 6: If editing, find workers who HAD assignments but DON'T anymore (need cleanup)
+    // Use originalAssignmentsMap loaded in Step 1
     const isEdit = !!existingScheduleId;
     const workersToCleanup = new Set<string>();
     
-    if (isEdit && existingScheduleId) {
-      try {
-        const originalAssignments = await getScheduleAssignments(departmentId, existingScheduleId);
-        const originalWorkerIds = new Set<string>();
-        
-        originalAssignments.forEach((assignment) => {
-          originalWorkerIds.add(assignment.workerId);
-        });
-        
-        // Find workers who had assignments but don't anymore
-        originalWorkerIds.forEach((workerId) => {
-          if (!assignmentsByWorker.has(workerId)) {
-            workersToCleanup.add(workerId);
-            console.log(`🔍 Worker ${workerId} had assignments in old schedule but not in new one - will cleanup`);
-          }
-        });
-      } catch (error) {
-        console.warn('Could not load original assignments for cleanup check:', error);
-      }
+    if (isEdit && originalAssignmentsMap.size > 0) {
+      const originalWorkerIds = new Set<string>();
+      
+      originalAssignmentsMap.forEach((assignment) => {
+        originalWorkerIds.add(assignment.workerId);
+      });
+      
+      // Find workers who had assignments but don't anymore
+      originalWorkerIds.forEach((workerId) => {
+        if (!assignmentsByWorker.has(workerId)) {
+          workersToCleanup.add(workerId);
+          console.log(`🔍 Worker ${workerId} had assignments in old schedule but not in new one - will cleanup`);
+        }
+      });
     }
 
-    // Step 6: Update each worker's data (in parallel for performance)
-    const workerUpdatePromises: Promise<void>[] = [];
+    // Step 7: Update each worker's data (in parallel for performance)
+    // Capture mandatory dates for closing calculator (avoids Firestore cache issues)
+    const workerMandatoryDates = new Map<string, Date[]>();
     
     // Update workers with assignments
-    assignmentsByWorker.forEach((workerAssignments, workerId) => {
-      workerUpdatePromises.push(
-        updateWorkerTaskData(departmentId, workerId, scheduleId, workerAssignments, taskDefinitionsMap, isEdit)
-      );
+    const workerUpdatePromises = Array.from(assignmentsByWorker.entries()).map(async ([workerId, workerAssignments]) => {
+      const mandatoryDates = await updateWorkerTaskData(departmentId, workerId, scheduleId, workerAssignments, taskDefinitionsMap, isEdit);
+      workerMandatoryDates.set(workerId, mandatoryDates);
     });
     
     // Cleanup workers who had assignments removed
-    workersToCleanup.forEach((workerId) => {
-      workerUpdatePromises.push(
-        updateWorkerTaskData(departmentId, workerId, scheduleId, [], taskDefinitionsMap, isEdit)
-      );
+    const cleanupPromises = Array.from(workersToCleanup).map(async (workerId) => {
+      const mandatoryDates = await updateWorkerTaskData(departmentId, workerId, scheduleId, [], taskDefinitionsMap, isEdit);
+      workerMandatoryDates.set(workerId, mandatoryDates);
     });
 
-    await Promise.all(workerUpdatePromises);
+    await Promise.all([...workerUpdatePromises, ...cleanupPromises]);
 
     console.log(`✅ Schedule ${scheduleId} saved with updates for ${assignmentsByWorker.size} workers (${workersToCleanup.size} cleaned up)`);
     
-    // Step 7: Calculate and update optimal closing dates for affected workers
+    // Step 8: Calculate and update optimal closing dates for affected workers
+    // Pass mandatory dates directly (from Step 6) to avoid Firestore cache issues
+    // Use originalAssignmentsMap loaded in Step 1 (before updates) for accurate change detection
     try {
       const { updateOptimalClosingDates } = await import('./closingScheduleUpdater');
       
-      // Load original assignments for comparison (already loaded if editing)
-      const originalAssignmentsMap = new Map<string, Assignment>();
-      if (isEdit && existingScheduleId) {
-        try {
-          const loadedOriginal = await getScheduleAssignments(departmentId, existingScheduleId);
-          loadedOriginal.forEach((assignment, key) => {
-            originalAssignmentsMap.set(key, assignment);
-          });
-        } catch (error) {
-          console.warn('Could not load original assignments for closing date calculation:', error);
-        }
-      }
+      console.log(`🔍 Calling updateOptimalClosingDates with ${originalAssignmentsMap.size} original assignments vs ${assignments.size} new assignments`);
       
       const updatedWorkerIds = await updateOptimalClosingDates(
         departmentId,
-        originalAssignmentsMap,
+        originalAssignmentsMap,  // Use the original assignments from Step 1
         assignments,
-        weeks
+        weeks,
+        workerMandatoryDates  // Pass mandatory dates directly from worker updates
       );
       
       console.log(`✅ Updated optimal closing dates for ${updatedWorkerIds.length} workers`);

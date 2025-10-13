@@ -5,12 +5,11 @@
  * Used by both owners and admins.
  * 
  * Features:
- * - Past schedules dropdown (latest 15)
+ * - Past schedules as clickable cards (latest 15)
  * - Create new schedule form (expandable)
  * - Edit existing schedule mode
- * - Primary task table with sticky headers
- * - Cell assignment modal
- * - Save and publish functionality
+ * - Mobile-responsive design
+ * - Glowing hover effects
  * 
  * Location: src/pages/common/PrimaryTasksDash.tsx
  * Purpose: Primary scheduling dashboard for owner/admin roles
@@ -36,7 +35,7 @@ import { formatDateDDMMYYYY } from '../../lib/utils/dateUtils';
 
 const PrimaryTasksDash: React.FC = () => {
   const navigate = useNavigate();
-  const { departmentId, departmentName } = useDepartment();
+  const { departmentId } = useDepartment();
 
   // Form State
   const [startDate, setStartDate] = useState<string>('');
@@ -47,6 +46,7 @@ const PrimaryTasksDash: React.FC = () => {
   // UI State
   const [pastSchedules, setPastSchedules] = useState<PastScheduleDisplay[]>([]);
   const [selectedSchedule, setSelectedSchedule] = useState<PrimaryScheduleUI | null>(null);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
 
   /**
    * Load past schedules from Firestore (4 latest)
@@ -68,6 +68,47 @@ const PrimaryTasksDash: React.FC = () => {
     loadPastSchedules();
   }, [departmentId]);
 
+
+  /**
+   * Handle selecting a past schedule card
+   */
+  const handleSelectSchedule = async (scheduleId: string) => {
+    if (!departmentId) return;
+
+    try {
+      const schedule = await getScheduleById(departmentId, scheduleId);
+      if (!schedule) {
+        alert('תורנות לא נמצאה');
+        return;
+      }
+
+      setSelectedSchedule(schedule);
+      setSelectedScheduleId(scheduleId);
+      setShowCreateForm(false); // Close create form if open
+    } catch (error) {
+      console.error('Error loading schedule:', error);
+      alert('שגיאה בטעינת תורנות');
+    }
+  };
+
+  /**
+   * Handle editing selected schedule
+   */
+  const handleEditSchedule = () => {
+    if (!selectedSchedule) return;
+
+    const startDateStr = `${selectedSchedule.startDate.getFullYear()}-${(selectedSchedule.startDate.getMonth() + 1).toString().padStart(2, '0')}-${selectedSchedule.startDate.getDate().toString().padStart(2, '0')}`;
+    const endDateStr = `${selectedSchedule.endDate.getFullYear()}-${(selectedSchedule.endDate.getMonth() + 1).toString().padStart(2, '0')}-${selectedSchedule.endDate.getDate().toString().padStart(2, '0')}`;
+
+    navigate('table-view', {
+      state: {
+        startDate: startDateStr,
+        endDate: endDateStr,
+        includeAdmins: selectedSchedule.includeAdmins,
+        scheduleId: selectedSchedule.scheduleId,
+      }
+    });
+  };
 
   /**
    * Handle create new schedule - Check for overlaps and navigate to table view
@@ -124,126 +165,126 @@ const PrimaryTasksDash: React.FC = () => {
     }
   };
 
-
-  /**
-   * Check if schedule exists for current selection
-   */
-  const scheduleExists = pastSchedules.length > 0 && selectedSchedule !== null;
-
   return (
     <div dir="rtl" className="relative flex-1 min-h-screen">
       <Background />
       <Header />
       
-      <div className="relative z-10 min-h-screen py-8 pt-24">
-        <div className="container mx-auto px-4">
+      <div className="relative z-10 min-h-screen py-8 pt-24 px-4">
+        <div className="container mx-auto max-w-6xl">
           {/* Page Title */}
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-white mb-2">
+            <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
               ניהול תורנות ראשית
             </h1>
-            <p className="text-white/70">
+            <p className="text-white/70 text-sm md:text-base">
               יצירה ועריכה של לוח משמרות ראשי למחלקה
             </p>
           </div>
 
-          {/* Past Schedules Dropdown */}
+          {/* Past Schedules Cards */}
           {pastSchedules.length > 0 && (
-            <div className="mb-6">
-              <label className="text-white font-semibold mb-2 block">
-                תורנות קודמות:
-              </label>
-              <select
-                className="w-full bg-slate-800/50 backdrop-blur-sm border border-white/20 rounded-xl px-4 py-3 text-white"
-                onChange={async (e) => {
-                  const selectedScheduleId = e.target.value;
-                  if (!selectedScheduleId || !departmentId) return;
-
-                  try {
-                    // Load schedule metadata
-                    const schedule = await getScheduleById(departmentId, selectedScheduleId);
-                    if (!schedule) {
-                      alert('תורנות לא נמצאה');
-                      return;
-                    }
-
-                    setSelectedSchedule(schedule);
-
-                    // Navigate to table view with schedule ID for editing
-                    const startDateStr = `${schedule.startDate.getFullYear()}-${(schedule.startDate.getMonth() + 1).toString().padStart(2, '0')}-${schedule.startDate.getDate().toString().padStart(2, '0')}`;
-                    const endDateStr = `${schedule.endDate.getFullYear()}-${(schedule.endDate.getMonth() + 1).toString().padStart(2, '0')}-${schedule.endDate.getDate().toString().padStart(2, '0')}`;
-
-                    navigate('table-view', {
-                      state: {
-                        startDate: startDateStr,
-                        endDate: endDateStr,
-                        includeAdmins: schedule.includeAdmins,
-                        scheduleId: schedule.scheduleId,
-                      }
-                    });
-                  } catch (error) {
-                    console.error('Error loading schedule:', error);
-                    alert('שגיאה בטעינת תורנות');
-                  }
-                }}
-              >
-                <option value="">בחר תורנות...</option>
+            <div className="mb-8">
+              <h2 className="text-white font-semibold mb-4 text-lg md:text-xl">
+                תורנויות קיימות:
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4">
                 {pastSchedules.map((schedule) => (
-                  <option key={schedule.scheduleId} value={schedule.scheduleId}>
-                    {schedule.label}
-                  </option>
+                  <button
+                    key={schedule.scheduleId}
+                    onClick={() => handleSelectSchedule(schedule.scheduleId)}
+                    className={`
+                      p-4 md:p-6 rounded-xl border-2 transition-all duration-300
+                      backdrop-blur-md text-right
+                      ${selectedScheduleId === schedule.scheduleId
+                        ? 'bg-gradient-to-br from-orange-600/40 to-amber-600/40 border-orange-400/60 shadow-lg shadow-orange-500/30 scale-[1.02]'
+                        : 'bg-white/10 border-white/20 hover:bg-white/15 hover:border-white/30 hover:shadow-lg hover:shadow-white/10'
+                      }
+                    `}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="text-2xl md:text-3xl">📋</div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-white font-bold text-sm md:text-base mb-1 truncate">
+                          {schedule.label.split(' - עודכן')[0]}
+                        </h3>
+                        <p className="text-white/70 text-xs md:text-sm">
+                          עודכן: {schedule.label.split('עודכן ')[1]}
+                        </p>
+                      </div>
+                      {selectedScheduleId === schedule.scheduleId && (
+                        <div className="text-orange-400 text-xl">✓</div>
+                      )}
+                    </div>
+                  </button>
                 ))}
-              </select>
+              </div>
             </div>
           )}
 
-          {/* Create / Edit Cards */}
+          {/* Create / Edit Action Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
             {/* Create New Schedule Card */}
             <button
               onClick={() => {
                 setShowCreateForm(!showCreateForm);
+                setSelectedScheduleId(null);
+                setSelectedSchedule(null);
               }}
               className={`
-                p-8 rounded-2xl border-2 transition-all duration-300
+                p-6 md:p-8 rounded-2xl border-2 transition-all duration-300
                 backdrop-blur-md
-                ${!scheduleExists
-                  ? 'bg-gradient-to-br from-green-600/30 to-emerald-600/30 border-green-400/50 hover:from-green-500/40 hover:to-emerald-500/40 scale-105 shadow-lg shadow-green-500/20'
-                  : 'bg-gradient-to-br from-slate-700/30 to-slate-800/30 border-slate-600/30 hover:from-slate-600/40 hover:to-slate-700/40'
+                ${!selectedSchedule
+                  ? 'bg-gradient-to-br from-green-600/40 to-emerald-600/40 border-green-400/60 hover:from-green-500/50 hover:to-emerald-500/50 shadow-lg shadow-green-500/30 scale-[1.02]'
+                  : 'bg-gradient-to-br from-slate-700/30 to-slate-800/30 border-slate-600/30 hover:from-slate-600/40 hover:to-slate-700/40 hover:border-slate-500/40'
                 }
               `}
             >
               <div className="text-center">
-                <div className="text-5xl mb-4">📅</div>
-                <h3 className="text-2xl font-bold text-white mb-2">
+                <div className="text-4xl md:text-5xl mb-3 md:mb-4">📅</div>
+                <h3 className="text-xl md:text-2xl font-bold text-white mb-2">
                   יצירת תורנות חדשה
                 </h3>
-                <p className="text-white/70">
+                <p className="text-white/70 text-sm md:text-base">
                   צור לוח משמרות חדש עם תאריכים מותאמים
                 </p>
               </div>
             </button>
 
-            {/* Info Card */}
-            <div
-              className="p-8 rounded-2xl border-2 transition-all duration-300 backdrop-blur-md bg-gradient-to-br from-purple-600/30 to-indigo-600/30 border-purple-400/50"
+            {/* Edit Schedule Card */}
+            <button
+              onClick={handleEditSchedule}
+              disabled={!selectedSchedule}
+              className={`
+                p-6 md:p-8 rounded-2xl border-2 transition-all duration-300
+                backdrop-blur-md
+                ${selectedSchedule
+                  ? 'bg-gradient-to-br from-orange-600/40 to-amber-600/40 border-orange-400/60 hover:from-orange-500/50 hover:to-amber-500/50 shadow-lg shadow-orange-500/30 scale-[1.02] cursor-pointer'
+                  : 'bg-gradient-to-br from-slate-700/30 to-slate-800/30 border-slate-600/30 cursor-not-allowed opacity-70'
+                }
+              `}
             >
               <div className="text-center">
-                <div className="text-5xl mb-4">ℹ️</div>
-                <h3 className="text-2xl font-bold text-white mb-2">
+                <div className="text-4xl md:text-5xl mb-3 md:mb-4">✏️</div>
+                <h3 className="text-xl md:text-2xl font-bold text-white mb-2">
                   עריכת תורנות
                 </h3>
-                <p className="text-white/70">
-                  לעריכת תורנות קיימת, בחר אותה מהרשימה למעלה
+                <p className="text-white/70 text-sm md:text-base">
+                  {selectedSchedule 
+                    ? 'לחץ כאן לעריכת התורנות שנבחרה'
+                    : 'בחר תורנות קיימת מלמעלה כדי לערוך'
+                  }
                 </p>
               </div>
-            </div>
+            </button>
           </div>
 
           {/* Create Schedule Form (Expandable) */}
           {showCreateForm && (
-            <div className="mb-8 bg-gradient-to-br from-blue-600/20 to-cyan-600/20 backdrop-blur-md rounded-2xl p-6 border border-white/10">
-              <h3 className="text-2xl font-bold text-white mb-4">יצירת תורנות חדשה</h3>
+            <div className="mb-8 bg-gradient-to-br from-green-600/20 to-emerald-600/20 backdrop-blur-md rounded-2xl p-4 md:p-6 border border-green-400/30 shadow-lg shadow-green-500/20">
+              <h3 className="text-xl md:text-2xl font-bold text-white mb-4">
+                יצירת תורנות חדשה
+              </h3>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
@@ -272,13 +313,13 @@ const PrimaryTasksDash: React.FC = () => {
                     onChange={(e) => setIncludeAdmins(e.target.checked)}
                     className="w-5 h-5 rounded"
                   />
-                  <span className="font-semibold">כלול מנהלים בטבלה</span>
+                  <span className="font-semibold text-sm md:text-base">כלול מנהלים בטבלה</span>
                 </label>
               </div>
 
               <Button
                 onClick={handleCreateSchedule}
-                className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500"
+                className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-sm md:text-base"
                 disabled={!startDate || !endDate}
               >
                 יצירה
@@ -287,14 +328,14 @@ const PrimaryTasksDash: React.FC = () => {
           )}
 
           {/* Empty State */}
-          {!showCreateForm && (
-            <div className="text-center py-16">
-              <div className="text-6xl mb-4">📋</div>
-              <h3 className="text-2xl font-bold text-white mb-2">
-                אין תורנות פעילה
+          {!showCreateForm && !selectedSchedule && pastSchedules.length === 0 && (
+            <div className="text-center py-12 md:py-16">
+              <div className="text-5xl md:text-6xl mb-4">📋</div>
+              <h3 className="text-xl md:text-2xl font-bold text-white mb-2">
+                אין תורנויות קיימות
               </h3>
-              <p className="text-white/70">
-                צור תורנות חדשה או בחר תורנות קיימת לעריכה
+              <p className="text-white/70 text-sm md:text-base">
+                צור תורנות חדשה כדי להתחיל
               </p>
             </div>
           )}
