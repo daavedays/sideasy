@@ -147,8 +147,10 @@ service cloud.firestore {
       // Admin: Can read workers in their department (UI filters by role)
       allow read: if isAuthenticated() && isAdminOfDepartment();
       
-      // Worker: Can read all workers in their department (to see preferences)
-      allow read: if isAuthenticated() && isWorkerInDepartment();
+      // Worker: Can ONLY read their own worker document (cost optimization)
+      allow get: if isAuthenticated() 
+        && request.auth.uid == workerId
+        && isWorkerInDepartment();
       
       // WRITE RULES
       // Developer can do anything

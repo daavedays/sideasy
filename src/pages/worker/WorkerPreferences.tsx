@@ -6,15 +6,16 @@
  * - Select date range
  * - Mark preferred tasks
  * - Block unavailable dates
- * - See other workers' preferences
  * - Submit preferences to Firestore
  * 
  * Location: src/pages/worker/WorkerPreferences.tsx
  * Purpose: Worker preference submission interface
+ * 
+ * COST OPTIMIZATION: Workers only fetch their own data (not all workers)
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, collection, getDocs, updateDoc, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
@@ -39,6 +40,11 @@ interface Worker {
   }[];
 }
 
+interface WorkerPreference {
+  date: Timestamp;
+  task: string | null;
+}
+
 type PreferenceAction = 'prefer' | 'blockDay' | 'blockTask' | 'clear';
 
 const WorkerPreferences: React.FC = () => {
@@ -48,7 +54,7 @@ const WorkerPreferences: React.FC = () => {
   
   // Data state
   const [tasks, setTasks] = useState<SecondaryTask[]>([]);
-  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [currentWorkerPreferences, setCurrentWorkerPreferences] = useState<WorkerPreference[]>([]);
   const [cellData, setCellData] = useState<Map<string, CellData>>(new Map());
   
   // UI state
@@ -60,6 +66,62 @@ const WorkerPreferences: React.FC = () => {
   // User state
   const [currentWorker, setCurrentWorker] = useState<Worker | null>(null);
   const [departmentId, setDepartmentId] = useState<string>('');
+
+  /**
+   * Get today's date at midnight (for comparison purposes)
+   * Used to prevent workers from submitting preferences for past dates
+   */
+  const getTodayMidnight = (): Date => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today;
+  };
+
+  /**
+   * Validate and set start date
+   * VALIDATION: Prevents selecting dates before today
+   * TODO: Add deadline validation based on department settings
+   */
+  const handleStartDateChange = (date: string) => {
+    if (!date) {
+      setStartDate('');
+      return;
+    }
+
+    const selectedDate = new Date(date);
+    selectedDate.setHours(0, 0, 0, 0);
+    const today = getTodayMidnight();
+
+    if (selectedDate < today) {
+      alert('לא ניתן לבחור תאריך התחלה בעבר');
+      return;
+    }
+
+    setStartDate(date);
+  };
+
+  /**
+   * Validate and set end date
+   * VALIDATION: Prevents selecting dates before today
+   * TODO: Add deadline validation based on department settings
+   */
+  const handleEndDateChange = (date: string) => {
+    if (!date) {
+      setEndDate('');
+      return;
+    }
+
+    const selectedDate = new Date(date);
+    selectedDate.setHours(0, 0, 0, 0);
+    const today = getTodayMidnight();
+
+    if (selectedDate < today) {
+      alert('לא ניתן לבחור תאריך סיום בעבר');
+      return;
+    }
+
+    setEndDate(date);
+  };
 
   /**
    * Initialize: Fetch user's department
@@ -83,16 +145,17 @@ const WorkerPreferences: React.FC = () => {
   }, []);
 
   /**
-   * Fetch secondary tasks and workers when department is loaded
+   * Fetch secondary tasks and current worker's data when department is loaded
+   * COST OPTIMIZATION: Only fetch current worker's document, not all workers
    */
   useEffect(() => {
-    if (!departmentId) return;
+    if (!departmentId || !auth.currentUser) return;
 
     const fetchData = async () => {
       try {
         setLoading(true);
 
-        // Fetch secondary tasks - CORRECT PATH
+        // Fetch secondary tasks
         const tasksDoc = await getDoc(doc(db, 'departments', departmentId, 'taskDefinitions', 'config'));
         if (tasksDoc.exists()) {
           const data = tasksDoc.data();
@@ -103,27 +166,27 @@ const WorkerPreferences: React.FC = () => {
           console.warn('⚠️ No task definitions found for department:', departmentId);
         }
 
-        // Fetch all workers in department - CORRECT PATH
-        const workersSnapshot = await getDocs(collection(db, 'departments', departmentId, 'workers'));
-        const workersData: Worker[] = [];
+        // Fetch ONLY current worker's data (cost optimization)
+        // Safe to use ! because we check auth.currentUser in useEffect guard above
+        const workerDocRef = doc(db, 'departments', departmentId, 'workers', auth.currentUser!.uid);
+        const workerDoc = await getDoc(workerDocRef);
         
-        workersSnapshot.forEach((doc) => {
-          const data = doc.data();
-          workersData.push({
-            workerId: doc.id,
+        if (workerDoc.exists()) {
+          const data = workerDoc.data();
+          const worker: Worker = {
+            workerId: workerDoc.id,
             firstName: data.firstName,
             lastName: data.lastName,
             qualifications: data.qualifications || [],
             preferences: data.preferences || []
-          });
-        });
-        
-        setWorkers(workersData);
-        console.log('✅ Loaded workers:', workersData.length);
-        
-        // Find current worker
-        const current = workersData.find(w => w.workerId === auth.currentUser?.uid);
-        setCurrentWorker(current || null);
+          };
+          
+          setCurrentWorker(worker);
+          setCurrentWorkerPreferences(data.preferences || []);
+          console.log('✅ Loaded current worker data');
+        } else {
+          console.error('❌ Worker document not found');
+        }
 
       } catch (error) {
         console.error('❌ Error fetching data:', error);
@@ -136,57 +199,69 @@ const WorkerPreferences: React.FC = () => {
   }, [departmentId]);
 
   /**
-   * Build cell data from workers' preferences when date range or workers change
-   * Now supports multiple workers per cell
+   * Build cell data from current worker's preferences only
+   * COST OPTIMIZATION: Only show current worker's preferences
    */
   useEffect(() => {
-    if (!startDate || !endDate || workers.length === 0) return;
+    if (!startDate || !endDate || !currentWorker) return;
 
     const newCellData = new Map<string, CellData>();
+    
+    // If no preferences, just set empty map (allows showing empty table)
+    if (currentWorkerPreferences.length === 0) {
+      setCellData(newCellData);
+      return;
+    }
+
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    workers.forEach((worker) => {
-      worker.preferences.forEach((pref) => {
-        const prefDate = pref.date.toDate();
+    currentWorkerPreferences.forEach((pref) => {
+      const prefDate = pref.date.toDate();
+      
+      // Only include preferences within date range
+      if (prefDate >= start && prefDate <= end) {
+        const taskId = pref.task || 'blocked';
+        const key = getCellKey(taskId, prefDate);
         
-        // Only include preferences within date range
-        if (prefDate >= start && prefDate <= end) {
-          const taskId = pref.task || 'blocked';
-          const key = getCellKey(taskId, prefDate);
-          
-          const status: CellStatus = pref.task ? 'preferred' : 'blocked';
-          
-          const workerInCell = {
-            workerId: worker.workerId,
-            workerName: `${worker.firstName} ${worker.lastName}`,
-            status
-          };
+        const status: CellStatus = pref.task ? 'preferred' : 'blocked';
+        
+        const workerInCell = {
+          workerId: currentWorker.workerId,
+          workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
+          status
+        };
 
-          // Check if cell already exists
-          const existingCell = newCellData.get(key);
-          if (existingCell) {
-            // Add worker to existing cell
-            existingCell.workers.push(workerInCell);
-          } else {
-            // Create new cell
-            newCellData.set(key, {
-              workers: [workerInCell],
-              taskId,
-              date: prefDate
-            });
-          }
-        }
-      });
+        // Create cell with only current worker
+        newCellData.set(key, {
+          workers: [workerInCell],
+          taskId,
+          date: prefDate
+        });
+      }
     });
 
     setCellData(newCellData);
-  }, [startDate, endDate, workers]);
+  }, [startDate, endDate, currentWorker, currentWorkerPreferences]);
 
   /**
    * Handle cell click - open modal for preference selection
+   * VALIDATION: Prevents workers from submitting preferences for past dates
+   * TODO: Add deadline functionality - prevent submissions after a certain date/time
+   * TODO: Make deadline configurable per department (e.g., 48 hours before schedule)
+   * TODO: Add UI indicator showing when deadline expires
    */
   const handleCellClick = (taskId: string, date: Date) => {
+    // Prevent setting preferences for past dates (today is allowed)
+    const today = getTodayMidnight();
+    const clickedDate = new Date(date);
+    clickedDate.setHours(0, 0, 0, 0);
+    
+    if (clickedDate < today) {
+      alert('לא ניתן להגיש בקשות לתאריכים שעברו');
+      return;
+    }
+    
     setSelectedCell({ taskId, date });
     setShowModal(true);
   };
@@ -349,6 +424,9 @@ const WorkerPreferences: React.FC = () => {
   /**
    * Save preferences to Firestore
    * Merges new preferences with existing ones outside the current date range
+   * VALIDATION: Filters out any preferences for past dates before saving
+   * TODO: Add deadline validation - prevent save if past deadline
+   * TODO: Show warning message when approaching deadline
    */
   const handleSavePreferences = async () => {
     if (!currentWorker || !departmentId || !startDate || !endDate) return;
@@ -357,6 +435,9 @@ const WorkerPreferences: React.FC = () => {
       // Get current date range boundaries
       const rangeStart = new Date(startDate);
       const rangeEnd = new Date(endDate);
+
+      // Get today's date for validation
+      const today = getTodayMidnight();
 
       // Fetch existing preferences from Firestore
       const workerRef = doc(db, 'departments', departmentId, 'workers', currentWorker.workerId);
@@ -380,12 +461,28 @@ const WorkerPreferences: React.FC = () => {
         );
         
         if (currentWorkerInCell) {
-          newPreferencesInRange.push({
-            date: Timestamp.fromDate(cell.date),
-            task: currentWorkerInCell.status === 'blocked' ? null : cell.taskId
-          });
+          // VALIDATION: Only include preferences for today or future dates
+          const cellDate = new Date(cell.date);
+          cellDate.setHours(0, 0, 0, 0);
+          
+          if (cellDate >= today) {
+            newPreferencesInRange.push({
+              date: Timestamp.fromDate(cell.date),
+              task: currentWorkerInCell.status === 'blocked' ? null : cell.taskId
+            });
+          }
         }
       });
+
+      // Check if any preferences were filtered out due to past dates
+      const totalCurrentWorkerPrefs = Array.from(cellData.values()).filter(cell => 
+        cell.workers.find(w => w.workerId === currentWorker.workerId)
+      ).length;
+      
+      if (totalCurrentWorkerPrefs > newPreferencesInRange.length) {
+        const filteredCount = totalCurrentWorkerPrefs - newPreferencesInRange.length;
+        alert(`שים לב: ${filteredCount} בקשות לתאריכים שעברו לא נשמרו`);
+      }
 
       // Merge: preferences outside range + new preferences in range
       const mergedPreferences = [...preferencesOutsideRange, ...newPreferencesInRange];
@@ -462,12 +559,12 @@ const WorkerPreferences: React.FC = () => {
               <HebrewDatePicker
                 label="תאריך התחלה"
                 value={startDate}
-                onChange={setStartDate}
+                onChange={handleStartDateChange}
               />
               <HebrewDatePicker
                 label="תאריך סיום"
                 value={endDate}
-                onChange={setEndDate}
+                onChange={handleEndDateChange}
               />
               <div className="flex items-end">
                 <button
@@ -552,39 +649,9 @@ const WorkerPreferences: React.FC = () => {
         <Modal isOpen={showModal} onClose={() => setShowModal(false)}>
           <div className="p-6" dir="rtl">
             <h2 className="text-2xl font-bold text-white mb-4">בחר פעולה</h2>
-            <p className="text-white/80 mb-2">
+            <p className="text-white/80 mb-4">
               תאריך: {formatDateForDisplay(selectedCell.date)} | משימה: {getTaskName(selectedCell.taskId)}
             </p>
-            
-            {/* Show worker preferences for THIS SPECIFIC CELL ONLY */}
-            {(() => {
-              const key = getCellKey(selectedCell.taskId, selectedCell.date);
-              const cell = cellData.get(key);
-              
-              return cell && cell.workers.length > 0 && (
-                <div className="bg-slate-800/50 rounded-lg p-3 mb-4 border border-slate-600/30 max-h-48 overflow-y-auto">
-                  <p className="text-white/60 text-sm font-bold mb-2">בקשות:</p>
-                  <div className="space-y-1">
-                    {cell.workers.map((worker, index) => (
-                      <div
-                        key={index}
-                        className={`text-sm ${
-                          worker.workerId === currentWorker?.workerId
-                            ? 'text-blue-400 font-bold'
-                            : 'text-white/80'
-                        }`}
-                      >
-                        <span>{worker.workerName}</span>
-                        <span className="text-white/60"> - </span>
-                        <span>
-                          {worker.status === 'preferred' ? 'מעדיף' : 'חסם'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
             
             <div className="space-y-3">
               <button
