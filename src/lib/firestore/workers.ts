@@ -42,33 +42,16 @@ export interface WorkerData {
   firstName: string;
   lastName: string;
   email: string;
-  מחלקה: string;                  // Department name in Hebrew
+  unit: string;                  // Sub-department name in Hebrew
   role: 'owner' | 'admin' | 'worker';
   isOfficer: boolean;
   activity: 'active' | 'deleted' | 'inactive';
-  score: number;
-  lastClosingDate: Timestamp | null;
-  mandatoryClosingDates: Timestamp[];
-  optimalClosingDates: Timestamp[];  // Calculated optimal closing dates based on interval
   qualifications: string[];
-  closingIntervals: number;
-  preferences: {
-    date: Timestamp;
-    task: string | null;
-  }[];
-  completedMainTasks: TaskEntry[];
-  completedSecondaryTasks: TaskEntry[];
-  scheduleTaskMap: {
-    primaryTasks: TaskEntry[];
-    lastUpdate: Timestamp;
-  };
-  statistics: {
-    totalMainTasks: number;
-    totalSecondaryTasks: number;
-    lastShiftDate: Timestamp | null;
-  };
+  closingInterval: number;         // singular per new schema
+  closingIntervals?: number;       // deprecated (backward-compatibility for UI)
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  updatedBy?: string;              // userId who last updated
 }
 
 export interface WorkerUpdateData {
@@ -80,7 +63,8 @@ export interface WorkerUpdateData {
   activity?: 'active' | 'deleted' | 'inactive';
   qualifications?: string[];
   מחלקה?: string;  // Sub-department field (editable by owner/admin)
-  closingIntervals?: number;  // Closing intervals (editable by owner/admin)
+  closingInterval?: number;   // New field (editable by owner/admin)
+  closingIntervals?: number;  // Deprecated input support (maps to closingInterval)
 }
 
 // ============================================================================
@@ -210,34 +194,18 @@ export async function createWorkerDocument(
       };
     }
 
-    // Create initial worker document
+    // Create initial worker document (minimal schema; heavy arrays live in workersIndex)
     const workerData: Partial<WorkerData> = {
       workerId,
       firstName: userData.firstName,
       lastName: userData.lastName,
       email: userData.email,
-      מחלקה: '',  // Sub-department (empty by default, editable by owner/admin)
+      unit: '',
       role: userData.role,
       isOfficer: false,
       activity: 'active',
-      score: 0,
-      lastClosingDate: null,
-      mandatoryClosingDates: [],
-      optimalClosingDates: [],  // Calculated closing dates (initially empty)
       qualifications: [],
-      closingIntervals: 0,
-      preferences: [],
-      completedMainTasks: [],
-      completedSecondaryTasks: [],
-      scheduleTaskMap: {
-        primaryTasks: [],
-        lastUpdate: serverTimestamp() as Timestamp
-      },
-      statistics: {
-        totalMainTasks: 0,
-        totalSecondaryTasks: 0,
-        lastShiftDate: null
-      },
+      closingInterval: 0,
       createdAt: serverTimestamp() as Timestamp,
       updatedAt: serverTimestamp() as Timestamp
     };
@@ -292,9 +260,10 @@ export async function updateWorkerWithSync(
     if (updates.activity !== undefined) syncedFields.activity = updates.activity;
 
     // Worker-only fields
-    if (updates.qualifications !== undefined) workerOnlyFields.qualifications = updates.qualifications;
-    if (updates.מחלקה !== undefined) workerOnlyFields.מחלקה = updates.מחלקה;
-    if (updates.closingIntervals !== undefined) workerOnlyFields.closingIntervals = updates.closingIntervals;
+  if (updates.qualifications !== undefined) workerOnlyFields.qualifications = updates.qualifications;
+  if (updates.מחלקה !== undefined) workerOnlyFields.מחלקה = updates.מחלקה;
+  if (updates.closingInterval !== undefined) workerOnlyFields.closingInterval = updates.closingInterval;
+  if (updates.closingIntervals !== undefined) workerOnlyFields.closingInterval = updates.closingIntervals; // map legacy to new
 
     // Add updatedAt timestamp to both
     const timestamp = serverTimestamp();

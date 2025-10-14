@@ -20,6 +20,7 @@ import { db } from '../../config/firebase';
 import { UserData } from './authHelpers';
 import { initializeDepartmentCollections } from '../firestore/initializeDepartment';
 import { createWorkerDocument } from '../firestore/workers';
+import { ensureWorkersIndex, upsertWorkerIndexEntry } from '../firestore/workersIndex';
 
 /**
  * Approve a user
@@ -119,7 +120,7 @@ export async function approveUser(
       }
     }
 
-    // Step 4: Create worker document for the approved user
+    // Step 4: Create worker document for the approved user (minimal schema)
     // Workers collection includes: owner, admin, and worker roles
     if (finalDepartmentId) {
       const workerResult = await createWorkerDocument(
@@ -136,7 +137,21 @@ export async function approveUser(
       if (!workerResult.success) {
         console.warn('Failed to create worker document:', workerResult.message);
         // Don't fail the approval if worker doc creation fails
-        // The admin can manually fix this later
+      }
+
+      // Step 5: Ensure workersIndex exists and upsert initial entry for this worker
+      try {
+        await ensureWorkersIndex(finalDepartmentId);
+        await upsertWorkerIndexEntry(finalDepartmentId, userId, {
+          lastClosingDate: null,
+          primaryTasksMap: [],
+          optimalClosingDates: [],
+          preferences: [],
+          score: 0
+        });
+      } catch (indexError) {
+        console.warn('Failed to initialize workersIndex entry:', indexError);
+        // Non-fatal; index can be rebuilt lazily
       }
     }
 

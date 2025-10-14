@@ -42,9 +42,13 @@ import {
   timestampToDate,
   assignmentUIToFirestore,
 } from '../utils/firestoreConverters';
+import { detectChangedWorkers } from '../utils/assignmentChangeDetector';
 import { formatDateFull, formatDateRange } from '../utils/weekUtils';
 import { generateCellKey } from '../utils/cellKeyUtils';
 import { TaskEntry } from './workers';
+
+// Single combined period document ID for storing all assignments of a schedule
+const COMBINED_PERIOD_DOC_ID = 'period_combined';
 
 /**
  * Get all schedules for a department (sorted by creation date)
@@ -211,50 +215,36 @@ export const saveAllPeriodAssignments = async (
   weeks: Array<{ weekNumber: number; startDate: Date; endDate: Date }>
 ): Promise<void> => {
   try {
-    const batch = writeBatch(db);
+    // Build a single combined period document for the entire schedule range
+    const firstWeek = weeks[0];
+    const lastWeek = weeks[weeks.length - 1];
 
-    // Group assignments by week number
-    const assignmentsByWeek = new Map<number, Assignment[]>();
-    
-    assignmentMap.forEach((assignment, _key) => {
-      const weekNumber = assignment.weekNumber;
-      if (!assignmentsByWeek.has(weekNumber)) {
-        assignmentsByWeek.set(weekNumber, []);
-      }
-      assignmentsByWeek.get(weekNumber)!.push(assignment);
-    });
+    const combinedRef = doc(
+      db,
+      'departments',
+      departmentId,
+      'schedules',
+      scheduleId,
+      'primaryTasks',
+      COMBINED_PERIOD_DOC_ID
+    );
 
-    // Create/update period documents
-    weeks.forEach((week) => {
-      const periodRef = doc(
-        db,
-        'departments',
-        departmentId,
-        'schedules',
-        scheduleId,
-        'primaryTasks',
-        `period_${week.weekNumber}`
-      );
+    const allAssignments: Assignment[] = Array.from(assignmentMap.values());
+    const firestoreAssignments = allAssignments.map(assignmentUIToFirestore);
 
-      const assignments = assignmentsByWeek.get(week.weekNumber) || [];
-      const firestoreAssignments = assignments.map(assignmentUIToFirestore);
+    const periodData = {
+      ...createNewPeriodFirestore(1, firstWeek.startDate, lastWeek.endDate),
+      periodId: COMBINED_PERIOD_DOC_ID,
+      assignments: firestoreAssignments,
+      updatedAt: Timestamp.now(),
+    } as Omit<PeriodDocument, 'periodId'> & { periodId: string };
 
-      const periodData = {
-        ...createNewPeriodFirestore(week.weekNumber, week.startDate, week.endDate),
-        periodId: `period_${week.weekNumber}`,
-        assignments: firestoreAssignments,
-        updatedAt: Timestamp.now(),
-      };
-
-      batch.set(periodRef, periodData, { merge: true });
-    });
-
-    await batch.commit();
+    await setDoc(combinedRef, periodData, { merge: true });
 
     // Update schedule's updatedAt timestamp
     await updateScheduleMetadata(departmentId, scheduleId, {});
   } catch (error) {
-    console.error('Error saving period assignments:', error);
+    console.error('Error saving combined period assignments:', error);
     throw error;
   }
 };
@@ -271,6 +261,31 @@ export const getScheduleAssignments = async (
   scheduleId: string
 ): Promise<AssignmentMap> => {
   try {
+    // Prefer the single combined period document if it exists
+    const combinedRef = doc(
+      db,
+      'departments',
+      departmentId,
+      'schedules',
+      scheduleId,
+      'primaryTasks',
+      COMBINED_PERIOD_DOC_ID
+    );
+    const combinedSnap = await getDoc(combinedRef);
+
+    const assignmentMap: AssignmentMap = new Map();
+
+    if (combinedSnap.exists()) {
+      const periodData = combinedSnap.data() as PeriodDocument;
+      const period = periodFirestoreToUI(periodData);
+      period.assignments.forEach((assignment) => {
+        const key = generateCellKey(assignment.workerId, assignment.weekNumber);
+        assignmentMap.set(key, assignment);
+      });
+      return assignmentMap;
+    }
+
+    // Fallback for legacy schedules with per-week period documents
     const primaryTasksRef = collection(
       db,
       'departments',
@@ -281,10 +296,9 @@ export const getScheduleAssignments = async (
     );
 
     const snapshot = await getDocs(primaryTasksRef);
-    const assignmentMap: AssignmentMap = new Map();
 
-    snapshot.forEach((doc) => {
-      const periodData = doc.data() as PeriodDocument;
+    snapshot.forEach((docSnap) => {
+      const periodData = docSnap.data() as PeriodDocument;
       const period = periodFirestoreToUI(periodData);
 
       period.assignments.forEach((assignment) => {
@@ -839,7 +853,7 @@ export const saveScheduleWithWorkerUpdates = async (
       console.log(`🔍 Created new schedule with ID: ${scheduleId}`);
     }
 
-    // Step 3: Save all period assignments
+    // Step 3: Save all assignments as a single combined period document
     await saveAllPeriodAssignments(departmentId, scheduleId, assignments, weeks);
 
     // Step 4: Load task definitions to get task names
@@ -871,46 +885,53 @@ export const saveScheduleWithWorkerUpdates = async (
       console.log(`🔍 Worker ${workerId} has ${workerAssignments.length} assignments`);
     });
 
-    // Step 6: If editing, find workers who HAD assignments but DON'T anymore (need cleanup)
-    // Use originalAssignmentsMap loaded in Step 1
+    // Step 6: Determine which workers actually changed and update only those
     const isEdit = !!existingScheduleId;
-    const workersToCleanup = new Set<string>();
-    
-    if (isEdit && originalAssignmentsMap.size > 0) {
-      const originalWorkerIds = new Set<string>();
-      
-      originalAssignmentsMap.forEach((assignment) => {
-        originalWorkerIds.add(assignment.workerId);
-      });
-      
-      // Find workers who had assignments but don't anymore
-      originalWorkerIds.forEach((workerId) => {
-        if (!assignmentsByWorker.has(workerId)) {
-          workersToCleanup.add(workerId);
-          console.log(`🔍 Worker ${workerId} had assignments in old schedule but not in new one - will cleanup`);
-        }
-      });
-    }
+    const changedWorkerIds = detectChangedWorkers(originalAssignmentsMap, assignments);
 
-    // Step 7: Update each worker's data (in parallel for performance)
-    // Capture mandatory dates for closing calculator (avoids Firestore cache issues)
+    // Step 7: Update changed workers' data (in parallel)
     const workerMandatoryDates = new Map<string, Date[]>();
-    
-    // Update workers with assignments
-    const workerUpdatePromises = Array.from(assignmentsByWorker.entries()).map(async ([workerId, workerAssignments]) => {
-      const mandatoryDates = await updateWorkerTaskData(departmentId, workerId, scheduleId, workerAssignments, taskDefinitionsMap, isEdit);
+
+    // Build a fast lookup for weekNumber -> week end date (Saturday)
+    const weekEndByNumber = new Map<number, Date>();
+    weeks.forEach(w => weekEndByNumber.set(w.weekNumber, w.endDate));
+
+    const workerUpdatePromises = Array.from(changedWorkerIds).map(async (workerId) => {
+      const workerAssignments = assignmentsByWorker.get(workerId) || [];
+      const mandatoryDates = await updateWorkerTaskData(
+        departmentId,
+        workerId,
+        scheduleId,
+        workerAssignments,
+        taskDefinitionsMap,
+        isEdit
+      );
       workerMandatoryDates.set(workerId, mandatoryDates);
-    });
-    
-    // Cleanup workers who had assignments removed
-    const cleanupPromises = Array.from(workersToCleanup).map(async (workerId) => {
-      const mandatoryDates = await updateWorkerTaskData(departmentId, workerId, scheduleId, [], taskDefinitionsMap, isEdit);
-      workerMandatoryDates.set(workerId, mandatoryDates);
+
+      // Update workersIndex.primaryTasksMap for this scheduleId (one entry per assigned task)
+      try {
+        const { setPrimaryTasksMapForSchedule } = await import('./workersIndex');
+        const newTasks: import('../../types/workersIndex.types').WorkerIndexPrimaryTask[] = [];
+
+        for (const assignment of workerAssignments) {
+          newTasks.push({
+            startDate: Timestamp.fromDate(assignment.startDate),
+            endDate: Timestamp.fromDate(assignment.endDate),
+            taskId: assignment.taskId,
+            taskName: taskDefinitionsMap.get(assignment.taskId) || assignment.taskId,
+            scheduleId
+          });
+        }
+
+        await setPrimaryTasksMapForSchedule(departmentId, workerId, scheduleId, newTasks);
+      } catch (e) {
+        console.warn('Failed to update primaryTasksMap for worker', workerId, e);
+      }
     });
 
-    await Promise.all([...workerUpdatePromises, ...cleanupPromises]);
+    await Promise.all(workerUpdatePromises);
 
-    console.log(`✅ Schedule ${scheduleId} saved with updates for ${assignmentsByWorker.size} workers (${workersToCleanup.size} cleaned up)`);
+    console.log(`✅ Schedule ${scheduleId} saved with updates for ${changedWorkerIds.size} workers`);
     
     // Step 8: Calculate and update optimal closing dates for affected workers
     // Pass mandatory dates directly (from Step 6) to avoid Firestore cache issues

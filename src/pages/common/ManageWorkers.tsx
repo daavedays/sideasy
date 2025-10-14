@@ -94,19 +94,24 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
       const workersData: WorkerData[] = [];
       
       snapshot.forEach((doc) => {
-        const data = doc.data() as WorkerData;
+        const data = doc.data() as any;
+        const normalized: WorkerData = {
+          ...data,
+          // Backward-compat: prefer new field, fallback to legacy
+          closingIntervals: (data.closingIntervals ?? data.closingInterval ?? 0) as number,
+        };
         
         // Filter by role for admins (only show workers)
-        if (userRole === 'admin' && data.role !== 'worker') {
+        if (userRole === 'admin' && normalized.role !== 'worker') {
           return;
         }
         
         // Don't show deleted users
-        if (data.activity === 'deleted') {
+        if (normalized.activity === 'deleted') {
           return;
         }
         
-        workersData.push(data);
+        workersData.push(normalized);
       });
       
       // Sort by name
@@ -207,10 +212,10 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
           JSON.stringify(original.qualifications.sort());
 
         // Check if מחלקה changed
-        const subdepartmentChanged = worker.מחלקה !== original.מחלקה;
+        const subdepartmentChanged = worker.unit !== original.unit;
 
         // Check if closingIntervals changed
-        const closingIntervalsChanged = worker.closingIntervals !== original.closingIntervals;
+        const closingIntervalsChanged = (worker.closingIntervals ?? 0) !== (original.closingIntervals ?? 0);
 
         // Check if synced fields changed (email excluded as it cannot be changed)
         const syncedChanged = 
@@ -244,7 +249,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
           
           // Worker-only fields (both owner and admin can edit)
           if (qualificationsChanged) updateData.qualifications = worker.qualifications;
-          if (subdepartmentChanged) updateData.מחלקה = worker.מחלקה;
+          if (subdepartmentChanged) updateData.מחלקה = worker.unit;
           if (closingIntervalsChanged) updateData.closingIntervals = worker.closingIntervals;
           
           // Synced fields (only owner can edit)
@@ -293,9 +298,10 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
     setEditingWorker({ ...worker });
     
     // Setup closing interval state
-    if (worker.closingIntervals >= 9 && worker.closingIntervals <= 12) {
+    const interval = worker.closingIntervals ?? 0;
+    if (interval >= 9 && interval <= 12) {
       setShowCustomIntervalInput(true);
-      setCustomClosingInterval(worker.closingIntervals);
+      setCustomClosingInterval(interval);
     } else {
       setShowCustomIntervalInput(false);
       setCustomClosingInterval(null);
@@ -319,7 +325,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
     }
 
     // Validate מחלקה length
-    if (editingWorker.מחלקה && editingWorker.מחלקה.length > 25) {
+    if (editingWorker.unit && editingWorker.unit.length > 25) {
       alert('מחלקה חייבת להכיל עד 25 תווים');
       return;
     }
@@ -327,7 +333,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
     // Trim מחלקה value
     const updatedWorker = {
       ...editingWorker,
-      מחלקה: editingWorker.מחלקה?.trim() || ''
+      unit: editingWorker.unit?.trim() || ''
     };
 
     // Update workers array
@@ -640,7 +646,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-white">
-                          {worker.מחלקה || <span className="text-white/40 italic">לא הוגדר</span>}
+                          {worker.unit || <span className="text-white/40 italic">לא הוגדר</span>}
                         </td>
                         <td className="px-6 py-4 text-center">
                           {worker.isOfficer ? (
@@ -653,7 +659,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                           {worker.qualifications.length} הסמכות
                         </td>
                         <td className="px-6 py-4 text-white">
-                          {getClosingIntervalLabel(worker.closingIntervals)}
+                          {getClosingIntervalLabel(worker.closingIntervals ?? 0)}
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex gap-2 justify-center">
@@ -811,11 +817,11 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                   </label>
                   <input
                     type="text"
-                    value={editingWorker.מחלקה || ''}
+                    value={editingWorker.unit || ''}
                     onChange={(e) => {
                       const value = e.target.value;
                       if (value.length <= 25) {
-                        handleUpdateField('מחלקה', value);
+                        handleUpdateField('unit', value);
                       }
                     }}
                     maxLength={25}
@@ -834,7 +840,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                   אינטרוולי סגירות
                 </label>
                 <select
-                  value={showCustomIntervalInput ? 'custom' : editingWorker.closingIntervals.toString()}
+                  value={showCustomIntervalInput ? 'custom' : String((editingWorker.closingIntervals ?? 0))}
                   onChange={(e) => handleClosingIntervalChange(e.target.value)}
                   className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-white/40"
                 >

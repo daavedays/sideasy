@@ -71,3 +71,5 @@ temp/
 .DS_Store
 .DS_Store
 firestore.rules
+.cursor/rules/always-read-rules.mdc
+firestore.rules

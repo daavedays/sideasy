@@ -14,10 +14,9 @@
  * Location: src/lib/firestore/closingScheduleUpdater.ts
  */
 
-import { doc, getDoc, updateDoc, Timestamp } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { Assignment } from '../../types/primarySchedule.types';
-import { WorkerData } from './workers';
 import { ClosingScheduleCalculator } from '../utils/closingScheduleCalculator';
 import { detectChangedWorkers } from '../utils/assignmentChangeDetector';
 import {
@@ -144,7 +143,7 @@ async function processWorkerClosingSchedule(
       return false;
     }
     
-    const workerData = workerSnap.data() as WorkerData;
+    const workerData = workerSnap.data() as any;
     const workerName = `${workerData.firstName} ${workerData.lastName}`;
     
     // Use the provided mandatoryDates (passed from updateWorkerTaskData)
@@ -152,14 +151,9 @@ async function processWorkerClosingSchedule(
     console.log(`🔍 Worker ${workerName}: received ${mandatoryDates.length} mandatory closing dates from fresh update`);
     
     // Skip if interval is 0 (never closes)
-    if (workerData.closingIntervals === 0) {
+    const interval: number = (workerData.closingInterval ?? workerData.closingIntervals ?? 0) as number;
+    if (interval === 0) {
       console.log(`⏭️ Skipping ${workerName} (interval = 0, never closes)`);
-      
-      // Only update optimal dates (mandatory dates already set by updateWorkerTaskData)
-      await updateDoc(workerRef, {
-        optimalClosingDates: [],
-        updatedAt: Timestamp.now(),
-      });
       
       return true;
     }
@@ -168,7 +162,7 @@ async function processWorkerClosingSchedule(
     const workerInput: WorkerClosingInput = {
       workerId,
       workerName,
-      closingInterval: workerData.closingIntervals,
+      closingInterval: interval,
       mandatoryClosingDates: mandatoryDates,
     };
     
@@ -184,12 +178,16 @@ async function processWorkerClosingSchedule(
       console.warn(`  ⚠️ Alerts for ${workerName}:`, result.userAlerts);
     }
     
-    // Update Firestore - only update optimalClosingDates
-    // (mandatoryClosingDates already updated by updateWorkerTaskData)
-    await updateDoc(workerRef, {
-      optimalClosingDates: result.optimalDates.map(d => Timestamp.fromDate(d)),
-      updatedAt: Timestamp.now(),
-    });
+    // Update workersIndex optimalClosingDates only for Fridays in this schedule
+    const { setOptimalClosingDatesForFridays } = await import('./workersIndex');
+    const { formatDateDDMMYYYY } = await import('../utils/dateUtils');
+    const fridayKeys = fridayDates.map(d => formatDateDDMMYYYY(d));
+    await setOptimalClosingDatesForFridays(
+      departmentId,
+      workerId,
+      fridayKeys,
+      result.optimalDates
+    );
     
     console.log(`  ✅ ${workerName}: ${mandatoryDates.length} mandatory + ${result.optimalDates.length} optimal dates`);
     return true;

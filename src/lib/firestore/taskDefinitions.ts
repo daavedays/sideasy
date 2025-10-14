@@ -12,6 +12,8 @@ import {
   doc, 
   setDoc, 
   getDoc,
+  onSnapshot,
+  Timestamp,
   collection,
   serverTimestamp
 } from 'firebase/firestore';
@@ -105,14 +107,58 @@ export async function initializeTaskDefinitions(
  */
 export async function getTaskDefinitions(departmentId: string): Promise<TaskDefinitions | null> {
   try {
+    const key = `taskDefs:${departmentId}`;
+    const isBrowser = typeof window !== 'undefined' && typeof localStorage !== 'undefined';
     const taskDefsRef = doc(db, 'departments', departmentId, 'taskDefinitions', 'config');
-    const docSnap = await getDoc(taskDefsRef);
-    
-    if (docSnap.exists()) {
-      return docSnap.data() as TaskDefinitions;
+
+    // 1) Return cached if available (fast path)
+    if (isBrowser) {
+      const cachedRaw = localStorage.getItem(key);
+      if (cachedRaw) {
+        try {
+          const cached = JSON.parse(cachedRaw) as {
+            updatedAtMs: number;
+            data: Pick<TaskDefinitions, 'main_tasks' | 'secondary_tasks'>;
+          };
+          // Build a TaskDefinitions object including a Timestamp updatedAt
+          const result: TaskDefinitions = {
+            main_tasks: cached.data.main_tasks,
+            secondary_tasks: cached.data.secondary_tasks,
+            updatedAt: Timestamp.fromMillis(cached.updatedAtMs)
+          } as TaskDefinitions;
+          // Ensure realtime cache updating is active
+          ensureTaskDefinitionsRealtimeCache(departmentId);
+          return result;
+        } catch (e) {
+          // fall through to fetch
+        }
+      }
     }
-    
-    return null;
+
+    // 2) No cache → fetch from Firestore
+    const docSnap = await getDoc(taskDefsRef);
+    if (!docSnap.exists()) return null;
+
+    const data = docSnap.data() as TaskDefinitions;
+    // Write to cache (only serializable parts + updatedAtMs)
+    if (isBrowser) {
+      try {
+        const updatedAtAny = (data as any).updatedAt;
+        const updatedAtMs = updatedAtAny?.toMillis ? updatedAtAny.toMillis() : Date.now();
+        const cachePayload = {
+          updatedAtMs,
+          data: {
+            main_tasks: { definitions: data.main_tasks?.definitions || [] },
+            secondary_tasks: { definitions: data.secondary_tasks?.definitions || [] }
+          }
+        };
+        localStorage.setItem(key, JSON.stringify(cachePayload));
+      } catch {}
+      // Start realtime cache listener
+      ensureTaskDefinitionsRealtimeCache(departmentId);
+    }
+
+    return data;
   } catch (error) {
     console.error('Error getting task definitions:', error);
     throw error;
@@ -143,6 +189,41 @@ export async function updateTaskDefinitions(
     console.error('Error updating task definitions:', error);
     throw error;
   }
+}
+
+// ======================================================
+// Realtime localStorage cache syncing for task definitions
+// ======================================================
+
+const taskDefsListeners: Record<string, boolean> = {};
+
+function ensureTaskDefinitionsRealtimeCache(departmentId: string) {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
+  if (taskDefsListeners[departmentId]) return; // already listening
+
+  const key = `taskDefs:${departmentId}`;
+  const ref = doc(db, 'departments', departmentId, 'taskDefinitions', 'config');
+
+  onSnapshot(ref, (snap) => {
+    if (!snap.exists()) return;
+    const data = snap.data() as TaskDefinitions;
+    try {
+      const updatedAtAny = (data as any).updatedAt;
+      const updatedAtMs = updatedAtAny?.toMillis ? updatedAtAny.toMillis() : Date.now();
+      const cachePayload = {
+        updatedAtMs,
+        data: {
+          main_tasks: { definitions: data.main_tasks?.definitions || [] },
+          secondary_tasks: { definitions: data.secondary_tasks?.definitions || [] }
+        }
+      };
+      localStorage.setItem(key, JSON.stringify(cachePayload));
+    } catch {}
+  }, (err) => {
+    console.warn('taskDefinitions cache listener error:', err);
+  });
+
+  taskDefsListeners[departmentId] = true;
 }
 
 /**

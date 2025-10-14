@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, updateDoc, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
@@ -40,10 +40,7 @@ interface Worker {
   }[];
 }
 
-interface WorkerPreference {
-  date: Timestamp;
-  task: string | null;
-}
+interface WorkerPreference { date: Timestamp; taskId: string | null; }
 
 type PreferenceAction = 'prefer' | 'blockDay' | 'blockTask' | 'clear';
 
@@ -170,23 +167,34 @@ const WorkerPreferences: React.FC = () => {
         // Safe to use ! because we check auth.currentUser in useEffect guard above
         const workerDocRef = doc(db, 'departments', departmentId, 'workers', auth.currentUser!.uid);
         const workerDoc = await getDoc(workerDocRef);
-        
-        if (workerDoc.exists()) {
-          const data = workerDoc.data();
-          const worker: Worker = {
-            workerId: workerDoc.id,
-            firstName: data.firstName,
-            lastName: data.lastName,
-            qualifications: data.qualifications || [],
-            preferences: data.preferences || []
-          };
-          
-          setCurrentWorker(worker);
-          setCurrentWorkerPreferences(data.preferences || []);
-          console.log('✅ Loaded current worker data');
-        } else {
+
+        if (!workerDoc.exists()) {
           console.error('❌ Worker document not found');
+          setLoading(false);
+          return;
         }
+
+        const data = workerDoc.data();
+        const worker: Worker = {
+          workerId: workerDoc.id,
+          firstName: data.firstName,
+          lastName: data.lastName,
+          qualifications: data.qualifications || [],
+          preferences: []
+        };
+        setCurrentWorker(worker);
+
+        // Load preferences from workersIndex
+        const indexRef = doc(db, 'departments', departmentId, 'workersIndex', 'index');
+        const indexSnap = await getDoc(indexRef);
+        if (indexSnap.exists()) {
+          const indexData = indexSnap.data() as any;
+          const entry = indexData.workers?.[auth.currentUser!.uid];
+          setCurrentWorkerPreferences((entry?.preferences || []).map((p: any) => ({ date: p.date, taskId: p.taskId })));
+        } else {
+          setCurrentWorkerPreferences([]);
+        }
+        console.log('✅ Loaded current worker data + preferences from index');
 
       } catch (error) {
         console.error('❌ Error fetching data:', error);
@@ -221,10 +229,10 @@ const WorkerPreferences: React.FC = () => {
       
       // Only include preferences within date range
       if (prefDate >= start && prefDate <= end) {
-        const taskId = pref.task || 'blocked';
+        const taskId = pref.taskId || 'blocked';
         const key = getCellKey(taskId, prefDate);
         
-        const status: CellStatus = pref.task ? 'preferred' : 'blocked';
+        const status: CellStatus = pref.taskId ? 'preferred' : 'blocked';
         
         const workerInCell = {
           workerId: currentWorker.workerId,
@@ -432,27 +440,17 @@ const WorkerPreferences: React.FC = () => {
     if (!currentWorker || !departmentId || !startDate || !endDate) return;
 
     try {
-      // Get current date range boundaries
-      const rangeStart = new Date(startDate);
-      const rangeEnd = new Date(endDate);
+      // Note: rangeStart/rangeEnd previously used for merging legacy data; no longer needed
 
       // Get today's date for validation
       const today = getTodayMidnight();
 
-      // Fetch existing preferences from Firestore
-      const workerRef = doc(db, 'departments', departmentId, 'workers', currentWorker.workerId);
-      const workerDoc = await getDoc(workerRef);
-      const existingPreferences = workerDoc.exists() ? (workerDoc.data().preferences || []) : [];
+      // Source of truth is workersIndex; no need to read legacy preferences from worker doc
 
-      // Filter out existing preferences that fall within current date range
-      // We'll replace these with new ones
-      const preferencesOutsideRange = existingPreferences.filter((pref: any) => {
-        const prefDate = pref.date.toDate();
-        return prefDate < rangeStart || prefDate > rangeEnd;
-      });
+      // Deprecated: existing preferences from workers doc are ignored; workersIndex is source of truth now
 
       // Collect new preferences for current worker from cellData (current date range only)
-      const newPreferencesInRange: { date: Timestamp; task: string | null }[] = [];
+      const newPreferencesInRange: { date: Timestamp; taskId: string | null }[] = [];
       
       Array.from(cellData.values()).forEach((cell) => {
         // Find current worker in this cell
@@ -468,7 +466,7 @@ const WorkerPreferences: React.FC = () => {
           if (cellDate >= today) {
             newPreferencesInRange.push({
               date: Timestamp.fromDate(cell.date),
-              task: currentWorkerInCell.status === 'blocked' ? null : cell.taskId
+              taskId: currentWorkerInCell.status === 'blocked' ? null : cell.taskId
             });
           }
         }
@@ -484,20 +482,10 @@ const WorkerPreferences: React.FC = () => {
         alert(`שים לב: ${filteredCount} בקשות לתאריכים שעברו לא נשמרו`);
       }
 
-      // Merge: preferences outside range + new preferences in range
-      const mergedPreferences = [...preferencesOutsideRange, ...newPreferencesInRange];
-
-      console.log('✅ Preference Save Summary:');
-      console.log('  - Existing preferences:', existingPreferences.length);
-      console.log('  - Preferences outside range (kept):', preferencesOutsideRange.length);
-      console.log('  - New preferences in range:', newPreferencesInRange.length);
-      console.log('  - Total after merge:', mergedPreferences.length);
-
-      // Update Firestore with merged preferences
-      await updateDoc(workerRef, {
-        preferences: mergedPreferences,
-        updatedAt: Timestamp.now()
-      });
+      // Replace preferences in workersIndex for current worker only
+      const mergedPreferences = newPreferencesInRange; // replacing range chunk (no merge with legacy storage)
+      const { replaceWorkerPreferences } = await import('../../lib/firestore/workersIndex');
+      await replaceWorkerPreferences(departmentId, currentWorker.workerId, mergedPreferences as any);
 
       setHasUnsavedChanges(false);
       alert('העדפות נשמרו בהצלחה!');
