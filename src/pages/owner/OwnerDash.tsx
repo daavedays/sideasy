@@ -8,9 +8,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, onSnapshot, getDocs } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../../config/firebase';
+import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
 import { UserData } from '../../lib/auth/authHelpers';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
@@ -65,6 +66,8 @@ const OwnerDash: React.FC = () => {
   }, []);
 
   // Real-time listener for pending approvals (admins and workers for this department)
+  // [RT-LISTENER] query(users where status=='pending' AND departmentId==X) – ספירת מנהלים/עובדים ממתינים לאישור בזמן אמת
+  // [RT-TOGGLE] שימוש ב-onSnapshot רק כשהדגל פעיל; אחרת שאילתה חד-פעמית וספירה ידנית (חיסכון בקריאות)
   useEffect(() => {
     if (!userData?.departmentId) return;
 
@@ -74,17 +77,31 @@ const OwnerDash: React.FC = () => {
       where('departmentId', '==', userData.departmentId)
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      // Count only admins and workers (not owners)
-      const count = snapshot.docs.filter(doc => {
-        const user = doc.data() as UserData;
-        return user.role === 'admin' || user.role === 'worker';
-      }).length;
-      
-      setPendingCount(count);
-    }, (error) => {
-      console.error('Error fetching pending users:', error);
-    });
+    let unsubscribe = () => {};
+    if (REALTIME_LISTENERS_ENABLED) {
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const count = snapshot.docs.filter(doc => {
+          const user = doc.data() as UserData;
+          return user.role === 'admin' || user.role === 'worker';
+        }).length;
+        setPendingCount(count);
+      }, (error) => {
+        console.error('Error fetching pending users:', error);
+      });
+    } else {
+      (async () => {
+        try {
+          const snap = await getDocs(q);
+          const count = snap.docs.filter(d => {
+            const user = d.data() as UserData;
+            return user.role === 'admin' || user.role === 'worker';
+          }).length;
+          setPendingCount(count);
+        } catch (e) {
+          console.error('Error fetching pending users:', e);
+        }
+      })();
+    }
 
     return () => unsubscribe();
   }, [userData?.departmentId]);

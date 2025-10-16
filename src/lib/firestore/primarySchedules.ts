@@ -46,6 +46,7 @@ import { detectChangedWorkers } from '../utils/assignmentChangeDetector';
 import { formatDateFull, formatDateRange } from '../utils/weekUtils';
 import { generateCellKey } from '../utils/cellKeyUtils';
 import { TaskEntry } from './workers';
+import { upsertWorkerIndexEntry, setPrimaryTasksMapForSchedule } from './workersIndex';
 
 // Single combined period document ID for storing all assignments of a schedule
 const COMBINED_PERIOD_DOC_ID = 'period_combined';
@@ -596,8 +597,17 @@ const updateWorkerTaskData = async (
     const workerData = workerSnap.data();
     const now = new Date();
 
-    // Get existing data
-    const existingPrimaryTasks = (workerData.scheduleTaskMap?.primaryTasks || []) as TaskEntry[];
+    // Load existing primary tasks from workersIndex (source of truth)
+    const indexRef = doc(db, 'departments', departmentId, 'workersIndex', 'index');
+    const indexSnap = await getDoc(indexRef);
+    const indexData = indexSnap.exists() ? (indexSnap.data() as any) : { workers: {} };
+    const indexEntry = indexData.workers?.[workerId] || {};
+    const existingPrimaryTasks = ((indexEntry.primaryTasksMap || []) as any[]).map((t) => ({
+      taskName: t.taskName,
+      startDate: t.startDate,
+      endDate: t.endDate,
+      scheduleId: t.scheduleId
+    })) as TaskEntry[];
     const existingTotalMainTasks = workerData.statistics?.totalMainTasks || 0;
     
     console.log(`🔍 Existing primary tasks: ${existingPrimaryTasks.length}`);
@@ -628,6 +638,7 @@ const updateWorkerTaskData = async (
 
     // Build new task entries from assignments
     const newTaskEntries: TaskEntry[] = [];
+    const newWorkerIndexTasks: Array<{ startDate: Timestamp; endDate: Timestamp; taskId: string; taskName: string; scheduleId: string }>= [];
     const allFridays = new Set<string>(); // ISO strings for deduplication
     let latestEndDate: Date | null = null;
 
@@ -638,12 +649,15 @@ const updateWorkerTaskData = async (
       console.log(`🔍 Processing assignment: taskId=${taskId}, taskName=${taskName}, startDate=${startDate.toISOString()}, endDate=${endDate.toISOString()}`);
 
       // Create task entry with scheduleId
+      const startTs = Timestamp.fromDate(startDate);
+      const endTs = Timestamp.fromDate(endDate);
       newTaskEntries.push({
         taskName,
-        startDate: Timestamp.fromDate(startDate),
-        endDate: Timestamp.fromDate(endDate),
-        scheduleId,  // Add scheduleId for future tracking
+        startDate: startTs,
+        endDate: endTs,
+        scheduleId,
       });
+      newWorkerIndexTasks.push({ startDate: startTs, endDate: endTs, taskId, taskName, scheduleId });
 
       // Get ALL Fridays if task spans Friday + Saturday
       const spansBothDays = spansFridayAndSaturday(startDate, endDate);
@@ -690,66 +704,44 @@ const updateWorkerTaskData = async (
       : (existingTotalMainTasks + assignments.length);
 
     // Handle mandatory closing dates
-    // When editing: we can't easily separate Friday dates by schedule, so we recalculate from scratch
-    // by looking at all tasks in scheduleTaskMap.primaryTasks
+    // Recalculate from the union of existing primary tasks (from workersIndex) and new task entries
     let mandatoryDatesArray: Timestamp[];
-    
-    if (isEdit) {
-      // Recalculate ALL mandatory closing dates from ALL tasks (including new ones)
-      const allTasksForFridayCheck = [...filteredExistingTasks, ...newTaskEntries];
-      const allFridaysRecalculated = new Set<string>();
-      
-      for (const task of allTasksForFridayCheck) {
-        const taskStart = task.startDate.toDate();
-        const taskEnd = task.endDate.toDate();
-        
-        if (spansFridayAndSaturday(taskStart, taskEnd)) {
-          const fridays = getAllFridayDates(taskStart, taskEnd);
-          fridays.forEach(friday => {
-            allFridaysRecalculated.add(friday.toISOString());
-          });
-        }
+    const allTasksForFridayCheck = isEdit
+      ? [...filteredExistingTasks, ...newTaskEntries]
+      : [...existingPrimaryTasks, ...newTaskEntries];
+
+    const allFridaysRecalculated = new Set<string>();
+    for (const task of allTasksForFridayCheck) {
+      const taskStart = task.startDate.toDate();
+      const taskEnd = task.endDate.toDate();
+      if (spansFridayAndSaturday(taskStart, taskEnd)) {
+        const fridays = getAllFridayDates(taskStart, taskEnd);
+        fridays.forEach(friday => {
+          allFridaysRecalculated.add(friday.toISOString());
+        });
       }
-      
-      mandatoryDatesArray = Array.from(allFridaysRecalculated)
-        .map(isoString => {
-          const date = new Date(isoString);
-          date.setHours(12, 0, 0, 0); // Normalize to 12:00 noon
-          return date;
-        })
-        .sort((a, b) => a.getTime() - b.getTime())
-        .map(date => Timestamp.fromDate(date));
-      
-      console.log(`🔍 [EDIT MODE] Recalculated ${mandatoryDatesArray.length} mandatory closing dates from ${allTasksForFridayCheck.length} tasks`);
-    } else {
-      // For new schedules, merge with existing mandatory dates
-      const existingFridays = (workerData.mandatoryClosingDates || []) as Timestamp[];
-      existingFridays.forEach(ts => allFridays.add(ts.toDate().toISOString()));
-      
-      mandatoryDatesArray = Array.from(allFridays)
-        .map(isoString => {
-          const date = new Date(isoString);
-          date.setHours(12, 0, 0, 0); // Normalize to 12:00 noon
-          return date;
-        })
-        .sort((a, b) => a.getTime() - b.getTime())
-        .map(date => Timestamp.fromDate(date));
     }
+
+    mandatoryDatesArray = Array.from(allFridaysRecalculated)
+      .map(isoString => {
+        const date = new Date(isoString);
+        date.setHours(12, 0, 0, 0); // Normalize to 12:00 noon
+        return date;
+      })
+      .sort((a, b) => a.getTime() - b.getTime())
+      .map(date => Timestamp.fromDate(date));
 
     // Calculate lastClosingDate (most recent Friday from mandatoryClosingDates)
     const lastClosingDate = mandatoryDatesArray.length > 0
       ? mandatoryDatesArray[mandatoryDatesArray.length - 1]
       : null;
 
-    // Prepare update object
-    const updates: any = {
-      scheduleTaskMap: {
-        primaryTasks: allPrimaryTasks,
-        lastUpdate: Timestamp.now(),
-      },
-      mandatoryClosingDates: mandatoryDatesArray,
-      completedMainTasks,
-      lastClosingDate,
+    // Persist schedule-related data to workersIndex (not workers doc)
+    await setPrimaryTasksMapForSchedule(departmentId, workerId, scheduleId, newWorkerIndexTasks as any);
+    await upsertWorkerIndexEntry(departmentId, workerId, { lastClosingDate });
+
+    // Update only statistics and updatedAt on workers doc
+    const statsUpdate: any = {
       statistics: {
         totalMainTasks: newTotalMainTasks,
         totalSecondaryTasks: workerData.statistics?.totalSecondaryTasks || 0,
@@ -758,16 +750,15 @@ const updateWorkerTaskData = async (
       updatedAt: Timestamp.now(),
     };
 
-    console.log(`🔍 Final update object:`, {
+    console.log(`🔍 Final stats update for worker ${workerId}:`, {
       primaryTasksCount: allPrimaryTasks.length,
       mandatoryClosingDatesCount: mandatoryDatesArray.length,
-      completedMainTasksCount: completedMainTasks.length,
       totalMainTasks: newTotalMainTasks,
       lastClosingDate: lastClosingDate?.toDate().toISOString() || null,
     });
 
-    await updateDoc(workerRef, updates);
-    console.log(`✅ Updated worker ${workerId}: ${newTotalMainTasks} total tasks, ${completedMainTasks.length} completed, ${mandatoryDatesArray.length} closing dates`);
+    await updateDoc(workerRef, statsUpdate);
+    console.log(`✅ Updated worker ${workerId} statistics; primary tasks and closing dates saved to workersIndex`);
     
     // Return mandatory dates as Date objects (normalized to noon Israel time for consistency)
     return mandatoryDatesArray.map(ts => {

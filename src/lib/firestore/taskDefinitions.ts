@@ -18,6 +18,7 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
+import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
 
 /**
  * Secondary Task Definition
@@ -200,10 +201,12 @@ const taskDefsListeners: Record<string, boolean> = {};
 function ensureTaskDefinitionsRealtimeCache(departmentId: string) {
   if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
   if (taskDefsListeners[departmentId]) return; // already listening
+  if (!REALTIME_LISTENERS_ENABLED) return; // [RT-TOGGLE] אל תפתח מאזין כשכבוי – חיסכון בקריאות
 
   const key = `taskDefs:${departmentId}`;
   const ref = doc(db, 'departments', departmentId, 'taskDefinitions', 'config');
 
+  // [RT-LISTENER] departments/{departmentId}/taskDefinitions/config – סנכרון cache מקומי של הגדרות משימות בזמן אמת
   onSnapshot(ref, (snap) => {
     if (!snap.exists()) return;
     const data = snap.data() as TaskDefinitions;

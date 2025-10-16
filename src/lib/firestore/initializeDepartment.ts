@@ -40,8 +40,18 @@ export async function initializeDepartmentCollections(
 
     console.log(`✅ Initialized taskDefinitions for department ${departmentId}`);
 
-    // Note: Workers subcollection doesn't need initialization
-    // It will be created automatically when the first worker document is added
+    // Ensure workers map/index container doc exists so subcollections can be created under it
+    const workersIndexContainerRef = doc(db, 'departments', departmentId, 'workers', 'index');
+    await setDoc(
+      workersIndexContainerRef,
+      {
+        // lightweight map placeholder (kept empty until first worker is added)
+        workers: {},
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+    console.log(`✅ Ensured workers/index container for department ${departmentId}`);
     
     // Note: Schedules and other subcollections will be added later when those features are implemented
 

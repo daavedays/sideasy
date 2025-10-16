@@ -153,39 +153,112 @@ service cloud.firestore {
         && isWorkerInDepartment();
       
       // WRITE RULES
-      // Developer can do anything
+      // Developer can do anything (kept for maintenance)
       allow write: if isAuthenticated() && isDeveloper();
+
+      // Disallow owners/admins from creating/updating/deleting per-worker docs.
+      // Only the consolidated 'index' doc is writable (see special-case below).
+      allow create, update, delete: if false;
       
-      // Owner can create/update/delete workers in their department
-      allow create, update, delete: if isAuthenticated() && isOwnerOfDepartment();
-      
-      // Admin can create worker documents (only for workers, not admins/owners) in their department
-      allow create: if isAuthenticated() && isAdminOfDepartment()
-        && request.resource.data.role == 'worker';
-      
-      // Admin can update qualifications, closing intervals, and schedule-related fields for workers
+      // Admin can update limited worker-only fields (no schedule arrays kept on workers anymore)
       allow update: if isAuthenticated() && isAdminOfDepartment()
-        && resource.data.role == 'worker'  // Can only update workers (not admins)
+        && resource.data.role == 'worker'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'qualifications', 
-          'closingIntervals',
+          'qualifications',
+          'closingInterval',
           'updatedAt',
-          'mandatoryClosingDates',
-          'optimalClosingDates',
-          'lastClosingDate',
-          'completedMainTasks',
-          'completedSecondaryTasks',
           'statistics',
-          'scheduleTaskMap',
-          'מחלקה'
+          'unit'
         ]);
-        // Admins can update qualifications, closing intervals, מחלקה, and schedule-related fields
+        // scheduleTaskMap/mandatoryClosingDates/completedMainTasks removed from workers doc
       
-      // Worker can update their own preferences
-      allow update: if isAuthenticated() 
-        && request.auth.uid == workerId
-        && getUserData().departmentId == departmentId
+      // Special-case: consolidated workers map document at departments/{departmentId}/workers/index
+      // Allow owner/admin to create the map doc and update only the 'workers' map and 'updatedAt'
+      allow create: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment()) && workerId == 'index';
+      allow update: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment()) && workerId == 'index'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workers', 'updatedAt']);
+      
+      // Worker preferences are managed in workersIndex only (no longer on workers doc)
+    }
+
+    // Pattern: /departments/{departmentId}/workersIndex/index
+    match /departments/{departmentId}/workersIndex/{docId} {
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+
+      function isOwnerOfDepartment() {
+        return getUserData().role == 'owner' && getUserData().departmentId == departmentId;
+      }
+
+      function isAdminOfDepartment() {
+        return getUserData().role == 'admin' && getUserData().departmentId == departmentId;
+      }
+
+      function isWorkerInDepartment() {
+        return getUserData().role == 'worker' && getUserData().departmentId == departmentId;
+      }
+
+      // READ: All roles in the department (owner, admin, worker) can read the index
+      allow read: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment() || isWorkerInDepartment());
+
+      // WRITE:
+      // 0) Allow owner/admin to create the index document (first-time setup)
+      allow create: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment()) && docId == 'index';
+
+      // 1) Workers can update ONLY their own preferences entry
+      allow update: if isAuthenticated() && isWorkerInDepartment()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workers', 'updatedAt'])
+        && request.resource.data.workers.diff(resource.data.workers).affectedKeys().hasOnly([request.auth.uid])
+        && request.resource.data.workers[request.auth.uid].diff(resource.data.workers[request.auth.uid]).affectedKeys().hasOnly(['preferences']);
+
+      // 2) Owners and Admins can update non-preference fields for any workers
+      // Note: Due to Firestore Rules limitations with map iteration, we rely on UI to prevent
+      // preference edits by admins/owners. This rule ensures only 'workers' and 'updatedAt' change.
+      allow update: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workers', 'updatedAt']);
+
+      // Developer can write (keep simple as per policy)
+      allow write: if isAuthenticated() && getUserData().role == 'developer';
+    }
+    
+    // Pattern: /departments/{departmentId}/workers/index/byWorker/{byWorkerId}
+    // Stores per-worker combined data (assignments, preferences) for efficient lookups
+    match /departments/{departmentId}/workers/index/byWorker/{byWorkerId} {
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+      function isDeveloper() {
+        return getUserData().role == 'developer';
+      }
+      function isOwnerOfDepartment() {
+        return getUserData().role == 'owner' && getUserData().departmentId == departmentId;
+      }
+      function isAdminOfDepartment() {
+        return getUserData().role == 'admin' && getUserData().departmentId == departmentId;
+      }
+      function isWorkerInDepartment() {
+        return getUserData().role == 'worker' && getUserData().departmentId == departmentId;
+      }
+
+      // Reads
+      allow get: if isAuthenticated() && (
+        isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment() ||
+        (isWorkerInDepartment() && request.auth.uid == byWorkerId)
+      );
+      allow list: if isAuthenticated() && (isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment());
+
+      // Writes
+      // 1) Worker can update ONLY their own preferences in their department
+      allow update: if isAuthenticated() && isWorkerInDepartment()
+        && byWorkerId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['preferences', 'updatedAt']);
+
+      // 2) Developer/Owner/Admin can create or update full doc (initialization/maintenance)
+      allow create, update: if isAuthenticated() && (
+        isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment()
+      );
+      allow delete: if isAuthenticated() && isDeveloper();
     }
     
     // Pattern: /departments/{departmentId}/schedules/{scheduleId}

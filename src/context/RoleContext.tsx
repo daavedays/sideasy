@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useAuthContext } from './AuthContext';
-import { COLLECTIONS, UserRole, UserStatus } from '../config/appConfig';
+import { COLLECTIONS, UserRole, UserStatus, REALTIME_LISTENERS_ENABLED } from '../config/appConfig';
 
 /**
  * Role Context
@@ -62,15 +62,35 @@ export const RoleProvider: React.FC<RoleProviderProps> = ({ children }) => {
     }
 
     // Listen to user document for real-time role updates
+    // [RT-LISTENER] users/{uid} – עדכוני תפקיד/סטטוס בזמן אמת
+    // [RT-TOGGLE] שימוש ב-onSnapshot רק כשהדגל פעיל; אחרת מבצעים קריאה חד-פעמית (חיסכון בקריאות)
     const userDocRef = doc(db, COLLECTIONS.USERS, currentUser.uid);
-    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setUserData(docSnap.data() as UserData);
-      } else {
-        setUserData(null);
-      }
-      setLoading(false);
-    });
+    let unsubscribe = () => {};
+    if (REALTIME_LISTENERS_ENABLED) {
+      unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          setUserData(docSnap.data() as UserData);
+        } else {
+          setUserData(null);
+        }
+        setLoading(false);
+      });
+    } else {
+      (async () => {
+        try {
+          const docSnap = await getDoc(userDocRef);
+          if (docSnap.exists()) {
+            setUserData(docSnap.data() as UserData);
+          } else {
+            setUserData(null);
+          }
+        } catch (e) {
+          setUserData(null);
+        } finally {
+          setLoading(false);
+        }
+      })();
+    }
 
     return () => unsubscribe();
   }, [currentUser]);

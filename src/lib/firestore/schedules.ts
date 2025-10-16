@@ -107,10 +107,10 @@ export interface CreatePrimaryTaskPeriodInput {
   periodNumber: number;
   startDate: Date;
   endDate: Date;
-  assignments: Omit<WorkerAssignment, 'startDate' | 'endDate'> & {
+  assignments: (Omit<WorkerAssignment, 'startDate' | 'endDate'> & {
     startDate: Date;
     endDate: Date;
-  }[];
+  })[];
 }
 
 // ============================================

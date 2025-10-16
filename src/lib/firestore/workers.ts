@@ -25,6 +25,7 @@ import {
   increment
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
+import { setWorkerClosingInterval } from './workersIndex';
 
 // ============================================================================
 // TYPES
@@ -42,13 +43,12 @@ export interface WorkerData {
   firstName: string;
   lastName: string;
   email: string;
-  unit: string;                  // Sub-department name in Hebrew
+  unit: string;                  // Sub-department name
   role: 'owner' | 'admin' | 'worker';
   isOfficer: boolean;
   activity: 'active' | 'deleted' | 'inactive';
   qualifications: string[];
   closingInterval: number;         // singular per new schema
-  closingIntervals?: number;       // deprecated (backward-compatibility for UI)
   createdAt: Timestamp;
   updatedAt: Timestamp;
   updatedBy?: string;              // userId who last updated
@@ -62,9 +62,74 @@ export interface WorkerUpdateData {
   isOfficer?: boolean;
   activity?: 'active' | 'deleted' | 'inactive';
   qualifications?: string[];
-  מחלקה?: string;  // Sub-department field (editable by owner/admin)
+  unit?: string;  // Sub-department field (editable by owner/admin)
   closingInterval?: number;   // New field (editable by owner/admin)
-  closingIntervals?: number;  // Deprecated input support (maps to closingInterval)
+}
+
+// ============================================================================
+// WORKERS MAP DOC (departments/{departmentId}/workers/index)
+// Replicates lightweight worker fields into a single map for cost-efficient reads
+// ============================================================================
+
+interface WorkerMapEntry {
+  workerId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  unit: string;
+  role: 'owner' | 'admin' | 'worker';
+  isOfficer: boolean;
+  activity: 'active' | 'deleted' | 'inactive';
+  qualifications: string[];
+  closingInterval: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+async function ensureWorkersMapDoc(departmentId: string): Promise<void> {
+  const mapRef = doc(db, 'departments', departmentId, 'workers', 'index');
+  const snap = await getDoc(mapRef);
+  if (!snap.exists()) {
+    await setDoc(mapRef, {
+      workers: {},
+      updatedAt: serverTimestamp() as Timestamp
+    } as { workers: Record<string, WorkerMapEntry>; updatedAt: Timestamp });
+  }
+}
+
+async function upsertWorkersMapEntry(
+  departmentId: string,
+  workerId: string,
+  updates: Partial<WorkerMapEntry>
+): Promise<void> {
+  const mapRef = doc(db, 'departments', departmentId, 'workers', 'index');
+  const snap = await getDoc(mapRef);
+  if (!snap.exists()) {
+    await ensureWorkersMapDoc(departmentId);
+  }
+
+  const current = (await getDoc(mapRef)).data() as { workers?: Record<string, WorkerMapEntry> } | undefined;
+  const existing = current?.workers?.[workerId];
+
+  const nextEntry: WorkerMapEntry = {
+    workerId: existing?.workerId ?? workerId,
+    firstName: updates.firstName ?? existing?.firstName ?? '',
+    lastName: updates.lastName ?? existing?.lastName ?? '',
+    email: updates.email ?? existing?.email ?? '',
+    unit: updates.unit ?? existing?.unit ?? '',
+    role: (updates.role as any) ?? existing?.role ?? 'worker',
+    isOfficer: updates.isOfficer ?? existing?.isOfficer ?? false,
+    activity: (updates.activity as any) ?? existing?.activity ?? 'active',
+    qualifications: updates.qualifications ?? existing?.qualifications ?? [],
+    closingInterval: updates.closingInterval ?? existing?.closingInterval ?? 0,
+    createdAt: existing?.createdAt ?? (serverTimestamp() as Timestamp),
+    updatedAt: serverTimestamp() as Timestamp
+  };
+
+  await updateDoc(mapRef, {
+    [`workers.${workerId}`]: nextEntry,
+    updatedAt: serverTimestamp()
+  });
 }
 
 // ============================================================================
@@ -183,19 +248,8 @@ export async function createWorkerDocument(
   }
 ): Promise<{ success: boolean; message: string }> {
   try {
-    const workerRef = doc(db, 'departments', departmentId, 'workers', workerId);
-
-    // Check if worker already exists
-    const existingWorker = await getDoc(workerRef);
-    if (existingWorker.exists()) {
-      return {
-        success: false,
-        message: 'Worker document already exists'
-      };
-    }
-
-    // Create initial worker document (minimal schema; heavy arrays live in workersIndex)
-    const workerData: Partial<WorkerData> = {
+    // Initialize consolidated workers map entry (no per-worker doc creation)
+    await upsertWorkersMapEntry(departmentId, workerId, {
       workerId,
       firstName: userData.firstName,
       lastName: userData.lastName,
@@ -205,16 +259,43 @@ export async function createWorkerDocument(
       isOfficer: false,
       activity: 'active',
       qualifications: [],
-      closingInterval: 0,
-      createdAt: serverTimestamp() as Timestamp,
-      updatedAt: serverTimestamp() as Timestamp
-    };
+      closingInterval: 0
+    } as Partial<WorkerMapEntry>);
 
-    await setDoc(workerRef, workerData);
+    // Initialize closingInterval in workersIndex entry as well
+    await setWorkerClosingInterval(departmentId, workerId, 0);
+
+    // Create per-worker combined document under workers/index/byWorker/{workerId}
+    // This document will store worker-specific assignments and preferences for efficient lookups
+    const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+    await setDoc(
+      byWorkerRef,
+      {
+        workerId,
+        // identity & role context for convenience
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        email: userData.email,
+        role: userData.role,
+        // mutable worker attributes defaults
+        unit: '',
+        isOfficer: false,
+        activity: 'active',
+        qualifications: [],
+        closingInterval: 0,
+        // assignment-related fields (worker-specific)
+        primaryTasksMap: [], // Array<{ startDate: Timestamp; endDate: Timestamp; taskId: string; taskName: string; scheduleId?: string }>
+        secondaryTaskDates: [], // Array<{ date: Timestamp; taskId: string }>
+        preferences: [], // Array<{ date: Timestamp; taskId: string | null }>
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
     return {
       success: true,
-      message: 'Worker document created successfully'
+      message: 'Worker initialized successfully'
     };
   } catch (error: any) {
     console.error('Error creating worker document:', error);
@@ -244,7 +325,6 @@ export async function updateWorkerWithSync(
   updates: WorkerUpdateData
 ): Promise<{ success: boolean; message: string }> {
   try {
-    const workerRef = doc(db, 'departments', departmentId, 'workers', workerId);
     const userRef = doc(db, 'users', workerId);
 
     // Separate synced fields from worker-only fields
@@ -261,9 +341,8 @@ export async function updateWorkerWithSync(
 
     // Worker-only fields
   if (updates.qualifications !== undefined) workerOnlyFields.qualifications = updates.qualifications;
-  if (updates.מחלקה !== undefined) workerOnlyFields.מחלקה = updates.מחלקה;
+  if (updates.unit !== undefined) workerOnlyFields.unit = updates.unit;
   if (updates.closingInterval !== undefined) workerOnlyFields.closingInterval = updates.closingInterval;
-  if (updates.closingIntervals !== undefined) workerOnlyFields.closingInterval = updates.closingIntervals; // map legacy to new
 
     // Add updatedAt timestamp to both
     const timestamp = serverTimestamp();
@@ -271,20 +350,7 @@ export async function updateWorkerWithSync(
     workerOnlyFields.updatedAt = timestamp;
 
     // Prepare updates
-    const updatePromises = [];
-
-    // Always update workers collection (with all fields that changed)
-    const workerUpdates = { ...workerOnlyFields };
-    
-    // Only add synced fields to worker updates if they exist
-    if (Object.keys(syncedFields).length > 1) { // > 1 because updatedAt is always there
-      Object.assign(workerUpdates, syncedFields);
-    } else {
-      // If no synced fields, still need updatedAt
-      workerUpdates.updatedAt = timestamp;
-    }
-    
-    updatePromises.push(updateDoc(workerRef, workerUpdates));
+    const updatePromises: Promise<any>[] = [];
 
     // Only update users collection if synced fields changed
     // (Admins don't have permission to update users collection)
@@ -293,6 +359,33 @@ export async function updateWorkerWithSync(
     }
 
     await Promise.all(updatePromises);
+
+    // Mirror changes into consolidated workers map doc
+    const mapUpdates: Partial<WorkerMapEntry> = {};
+    if (updates.firstName !== undefined) mapUpdates.firstName = updates.firstName as any;
+    if (updates.lastName !== undefined) mapUpdates.lastName = updates.lastName as any;
+    if (updates.email !== undefined) mapUpdates.email = updates.email as any;
+    if (updates.role !== undefined) mapUpdates.role = updates.role as any;
+    if (updates.isOfficer !== undefined) mapUpdates.isOfficer = updates.isOfficer as any;
+    if (updates.activity !== undefined) mapUpdates.activity = updates.activity as any;
+    if (updates.qualifications !== undefined) mapUpdates.qualifications = updates.qualifications as any;
+    if (updates.unit !== undefined) mapUpdates.unit = updates.unit as any;
+    if (updates.closingInterval !== undefined) mapUpdates.closingInterval = updates.closingInterval as any;
+
+    if (Object.keys(mapUpdates).length > 0) {
+      await upsertWorkersMapEntry(departmentId, workerId, mapUpdates);
+    }
+
+    // Keep workersIndex.closingInterval in sync
+    if (updates.closingInterval !== undefined) {
+      await setWorkerClosingInterval(departmentId, workerId, updates.closingInterval);
+    }
+
+    // Sync qualifications into workersIndex for quick reads
+    if (updates.qualifications !== undefined) {
+      const { upsertWorkerIndexEntry } = await import('./workersIndex');
+      await upsertWorkerIndexEntry(departmentId, workerId, { qualifications: updates.qualifications as any });
+    }
 
     return {
       success: true,
@@ -335,7 +428,6 @@ export async function changeWorkerRole(
       };
     }
 
-    const workerRef = doc(db, 'departments', departmentId, 'workers', workerId);
     const userRef = doc(db, 'users', workerId);
     const deptRef = doc(db, 'departments', departmentId);
 
@@ -354,12 +446,14 @@ export async function changeWorkerRole(
     }
     countUpdates.updatedAt = timestamp;
 
-    // Update all three documents
+    // Update user and department only (no per-worker doc writes)
     await Promise.all([
-      updateDoc(workerRef, { role: newRole, updatedAt: timestamp }),
       updateDoc(userRef, { role: newRole, updatedAt: timestamp }),
       updateDoc(deptRef, countUpdates)
     ]);
+
+    // Mirror role change in consolidated workers map
+    await upsertWorkersMapEntry(departmentId, workerId, { role: newRole } as Partial<WorkerMapEntry>);
 
     return {
       success: true,
@@ -390,17 +484,12 @@ export async function softDeleteWorker(
   workerRole: 'owner' | 'admin' | 'worker'
 ): Promise<{ success: boolean; message: string }> {
   try {
-    const workerRef = doc(db, 'departments', departmentId, 'workers', workerId);
     const userRef = doc(db, 'users', workerId);
     const deptRef = doc(db, 'departments', departmentId);
 
     const timestamp = serverTimestamp();
 
-    // Update workers collection
-    const workerUpdates = {
-      activity: 'deleted',
-      updatedAt: timestamp
-    };
+    // Legacy: per-worker doc not updated anymore
 
     // Update users collection
     const userUpdates = {
@@ -418,12 +507,14 @@ export async function softDeleteWorker(
     }
     // Owner count is not tracked separately (assumed to be 1)
 
-    // Update all documents
+    // Update users and department only (no per-worker doc writes)
     await Promise.all([
-      updateDoc(workerRef, workerUpdates),
       updateDoc(userRef, userUpdates),
       updateDoc(deptRef, countUpdates)
     ]);
+
+    // Mirror activity change in consolidated workers map
+    await upsertWorkersMapEntry(departmentId, workerId, { activity: 'deleted' } as Partial<WorkerMapEntry>);
 
     // TODO: Remove from future schedules (when schedules are implemented)
 
@@ -484,5 +575,89 @@ export function canDeleteUser(
   if (currentUserRole === 'admin') return false;
 
   return false;
+}
+
+// ============================================================================
+// WORKER PREFERENCES (byWorker) OPERATIONS
+// ============================================================================
+
+/**
+ * Replace a worker's preferences in the byWorker document only.
+ * Path: departments/{departmentId}/workers/index/byWorker/{workerId}
+ */
+export async function replaceWorkerPreferencesByWorker(
+  departmentId: string,
+  workerId: string,
+  preferences: Array<{ date: Timestamp; taskId: string | null }>
+): Promise<void> {
+  const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+  await setDoc(
+    byWorkerRef,
+    {
+      preferences: preferences || [],
+      updatedAt: serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Merge preferences only within the provided date range. Outside the range remains unchanged.
+ * For each date (day granularity), only a single entry is kept. If multiple entries exist for the
+ * same date in the new set, priority is: blocked (taskId=null) > last specified.
+ */
+export async function setWorkerPreferencesByWorkerForRange(
+  departmentId: string,
+  workerId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  newPreferencesInRange: Array<{ date: Timestamp; taskId: string | null; status: 'preferred' | 'blocked' }>
+): Promise<void> {
+  const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+  const snap = await getDoc(byWorkerRef);
+  const existing = (snap.exists() ? (snap.data() as any).preferences : []) || [];
+
+  const start = new Date(rangeStart);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(rangeEnd);
+  end.setHours(0, 0, 0, 0);
+
+  const isInRange = (ts: Timestamp) => {
+    const d = ts.toDate();
+    d.setHours(0, 0, 0, 0);
+    return d >= start && d <= end;
+  };
+
+  // Preserve existing entries outside range
+  const preserved: Array<{ date: Timestamp; taskId: string | null; status?: 'preferred' | 'blocked' }> = (existing as any[]).filter((p) => !isInRange(p.date));
+
+  // Deduplicate new entries by date (keep blocked if any for that date)
+  // Deduplicate by (day, taskId) where taskId may be null for legacy blocked-day entries
+  type Pref = { date: Timestamp; taskId: string | null; status: 'preferred' | 'blocked' };
+  const byKey = new Map<string, Pref>();
+  for (const p of newPreferencesInRange || []) {
+    const day = p.date.toDate();
+    day.setHours(0, 0, 0, 0);
+    const key = `${day.getTime()}|${p.taskId ?? 'NULL'}`;
+    const existingForKey = byKey.get(key);
+    if (!existingForKey) {
+      byKey.set(key, p);
+    } else {
+      // If any entry for this (date,task) is blocked, keep blocked; else keep latest
+      const blocked = existingForKey.status === 'blocked' || p.status === 'blocked';
+      byKey.set(key, { date: p.date, taskId: p.taskId ?? null, status: blocked ? 'blocked' : 'preferred' });
+    }
+  }
+
+  const merged = [...preserved, ...Array.from(byKey.values())];
+
+  await setDoc(
+    byWorkerRef,
+    {
+      preferences: merged,
+      updatedAt: serverTimestamp()
+    },
+    { merge: true }
+  );
 }
 

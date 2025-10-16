@@ -9,9 +9,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, onSnapshot, getCountFromServer } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../../config/firebase';
+import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
 import { UserData } from '../../lib/auth/authHelpers';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
@@ -66,6 +67,8 @@ const AdminDash: React.FC = () => {
   }, []);
 
   // Real-time listener for pending approvals (workers for this department)
+  // [RT-LISTENER] query(users where status=='pending' AND departmentId==X AND role=='worker') – ספירת עובדים ממתינים לאישור בזמן אמת
+  // [RT-TOGGLE] שימוש ב-onSnapshot רק כשהדגל פעיל; אחרת שימוש בספירה חד-פעמית (חיסכון בקריאות)
   useEffect(() => {
     if (!userData?.departmentId) return;
 
@@ -75,12 +78,23 @@ const AdminDash: React.FC = () => {
       where('departmentId', '==', userData.departmentId),
       where('role', '==', 'worker')
     );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPendingCount(snapshot.size);
-    }, (error) => {
-      console.error('Error fetching pending users:', error);
-    });
+    let unsubscribe = () => {};
+    if (REALTIME_LISTENERS_ENABLED) {
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        setPendingCount(snapshot.size);
+      }, (error) => {
+        console.error('Error fetching pending users:', error);
+      });
+    } else {
+      (async () => {
+        try {
+          const snap = await getCountFromServer(q);
+          setPendingCount(snap.data().count);
+        } catch (e) {
+          console.error('Error counting pending users:', e);
+        }
+      })();
+    }
 
     return () => unsubscribe();
   }, [userData?.departmentId]);

@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useRoleContext } from './RoleContext';
-import { COLLECTIONS } from '../config/appConfig';
+import { COLLECTIONS, REALTIME_LISTENERS_ENABLED } from '../config/appConfig';
 
 /**
  * Department Context
@@ -59,18 +59,41 @@ export const DepartmentProvider: React.FC<DepartmentProviderProps> = ({ children
     }
 
     // Listen to department document for real-time updates
+    // [RT-LISTENER] departments/{departmentId} – עדכוני פרטי מחלקה בזמן אמת
+    // [RT-TOGGLE] שימוש ב-onSnapshot רק כשהדגל פעיל; אחרת קריאה חד-פעמית (חיסכון בקריאות)
     const departmentDocRef = doc(db, COLLECTIONS.DEPARTMENTS, departmentId);
-    const unsubscribe = onSnapshot(departmentDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setDepartment({
-          id: docSnap.id,
-          ...docSnap.data()
-        } as Department);
-      } else {
-        setDepartment(null);
-      }
-      setLoading(false);
-    });
+    let unsubscribe = () => {};
+    if (REALTIME_LISTENERS_ENABLED) {
+      unsubscribe = onSnapshot(departmentDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          setDepartment({
+            id: docSnap.id,
+            ...docSnap.data()
+          } as Department);
+        } else {
+          setDepartment(null);
+        }
+        setLoading(false);
+      });
+    } else {
+      (async () => {
+        try {
+          const docSnap = await getDoc(departmentDocRef);
+          if (docSnap.exists()) {
+            setDepartment({
+              id: docSnap.id,
+              ...docSnap.data()
+            } as Department);
+          } else {
+            setDepartment(null);
+          }
+        } catch (e) {
+          setDepartment(null);
+        } finally {
+          setLoading(false);
+        }
+      })();
+    }
 
     return () => unsubscribe();
   }, [userData?.departmentId]);

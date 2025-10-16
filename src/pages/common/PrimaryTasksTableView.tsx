@@ -10,7 +10,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { useDepartment } from '../../hooks/useDepartment';
@@ -144,48 +144,47 @@ const PrimaryTasksTableView: React.FC = () => {
     loadExistingSchedule();
   }, [scheduleId, departmentId]);
 
-  // Load workers and admins from Firestore (real-time)
+  // Load workers and admins from consolidated map doc (single read)
   useEffect(() => {
-    if (!departmentId) return;
+    const loadWorkersOnce = async () => {
+      if (!departmentId) return;
 
-    const workersRef = collection(db, 'departments', departmentId, 'workers');
-    
-    const unsubscribe = onSnapshot(workersRef, (snapshot) => {
-      const workersData: Worker[] = [];
-      const adminsData: Worker[] = [];
-      
-      snapshot.forEach((doc) => {
-        const data = doc.data() as WorkerData;
-        
-        // Skip deleted users
-        if (data.activity === 'deleted') return;
-        
-        // Map WorkerData to Worker type
-        const worker: Worker = {
-          workerId: data.workerId,
-          firstName: data.firstName,
-          lastName: data.lastName,
-          fullName: `${data.firstName} ${data.lastName}`,
-          email: data.email,
-          role: data.role,
-          isActive: data.activity === 'active',
-        };
-        
-        // Separate workers from admins/owners
-        if (data.role === 'worker') {
-          workersData.push(worker);
-        } else if (data.role === 'admin' || data.role === 'owner') {
-          adminsData.push(worker);
+      try {
+        const mapRef = doc(db, 'departments', departmentId, 'workers', 'index');
+        const mapSnap = await getDoc(mapRef);
+        const workersData: Worker[] = [];
+        const adminsData: Worker[] = [];
+
+        if (mapSnap.exists()) {
+          const data = mapSnap.data() as any;
+          const workersMap = (data.workers || {}) as Record<string, any>;
+          Object.values(workersMap).forEach((entry: any) => {
+            if (entry.activity === 'deleted') return;
+            const worker: Worker = {
+              workerId: entry.workerId,
+              firstName: entry.firstName,
+              lastName: entry.lastName,
+              fullName: `${entry.firstName} ${entry.lastName}`,
+              email: entry.email,
+              role: entry.role,
+              isActive: entry.activity === 'active',
+            };
+            if (entry.role === 'worker') {
+              workersData.push(worker);
+            } else if (entry.role === 'admin' || entry.role === 'owner') {
+              adminsData.push(worker);
+            }
+          });
         }
-      });
-      
-      setWorkers(workersData);
-      setAdmins(adminsData);
-    }, (error) => {
-      console.error('Error loading workers:', error);
-    });
 
-    return () => unsubscribe();
+        setWorkers(workersData);
+        setAdmins(adminsData);
+      } catch (error) {
+        console.error('Error loading workers map:', error);
+      }
+    };
+
+    loadWorkersOnce();
   }, [departmentId]);
 
   // Load task definitions from Firestore

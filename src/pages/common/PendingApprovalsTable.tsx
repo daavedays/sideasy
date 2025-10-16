@@ -9,13 +9,14 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, doc, getDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, getDoc, getDocs } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
 import { UserData } from '../../lib/auth/authHelpers';
 import { approveUser, rejectUser } from '../../lib/auth/approvalHelpers';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
 import { useNavigate } from 'react-router-dom';
+import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
 
 type UserRole = 'owner' | 'admin' | 'worker';
 
@@ -78,6 +79,8 @@ const PendingApprovalsTable: React.FC<PendingApprovalsTableProps> = ({
   }, [filterByDepartment]);
 
   // Real-time listener for pending users
+  // [RT-LISTENER] query(users where status=='pending' [AND departmentId==X]) – טבלת משתמשים ממתינים לאישור בזמן אמת
+  // [RT-TOGGLE] שימוש ב-onSnapshot רק כשהדגל פעיל; אחרת טעינה חד-פעמית של הרשימה (חיסכון בקריאות)
   useEffect(() => {
     // Wait for department ID if filtering by department
     if (filterByDepartment && userDepartmentId === null) return;
@@ -99,42 +102,53 @@ const PendingApprovalsTable: React.FC<PendingApprovalsTableProps> = ({
       );
     }
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const users: UserData[] = [];
-      
-      snapshot.forEach((doc) => {
-        const userData = doc.data() as UserData;
-        
-        // Filter by allowed roles
-        if (!allowedRoles.includes(userData.role as UserRole)) {
-          return;
+    let unsubscribe = () => {};
+    if (REALTIME_LISTENERS_ENABLED) {
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const users: UserData[] = [];
+        snapshot.forEach((doc) => {
+          const userData = doc.data() as UserData;
+          if (!allowedRoles.includes(userData.role as UserRole)) return;
+          if (requireEmailVerified && !userData.emailVerified) return;
+          users.push(userData);
+        });
+        users.sort((a, b) => {
+          const timeA = a.createdAt?.toMillis?.() || 0;
+          const timeB = b.createdAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        });
+        setPendingUsers(users);
+        setLoading(false);
+      }, (error) => {
+        console.error('Error fetching pending users:', error);
+        setMessage({ type: 'error', text: 'שגיאה בטעינת משתמשים. אנא רענן את הדף.' });
+        setLoading(false);
+      });
+    } else {
+      (async () => {
+        try {
+          const snap = await getDocs(q);
+          const users: UserData[] = [];
+          snap.forEach((d) => {
+            const userData = d.data() as UserData;
+            if (!allowedRoles.includes(userData.role as UserRole)) return;
+            if (requireEmailVerified && !userData.emailVerified) return;
+            users.push(userData);
+          });
+          users.sort((a, b) => {
+            const timeA = a.createdAt?.toMillis?.() || 0;
+            const timeB = b.createdAt?.toMillis?.() || 0;
+            return timeB - timeA;
+          });
+          setPendingUsers(users);
+        } catch (e) {
+          console.error('Error fetching pending users:', e);
+          setMessage({ type: 'error', text: 'שגיאה בטעינת משתמשים. אנא רענן את הדף.' });
+        } finally {
+          setLoading(false);
         }
-
-        // Filter by email verification if required
-        if (requireEmailVerified && !userData.emailVerified) {
-          return;
-        }
-
-        users.push(userData);
-      });
-      
-      // Sort by createdAt
-      users.sort((a, b) => {
-        const timeA = a.createdAt?.toMillis?.() || 0;
-        const timeB = b.createdAt?.toMillis?.() || 0;
-        return timeB - timeA;
-      });
-      
-      setPendingUsers(users);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching pending users:', error);
-      setMessage({ 
-        type: 'error', 
-        text: 'שגיאה בטעינת משתמשים. אנא רענן את הדף.' 
-      });
-      setLoading(false);
-    });
+      })();
+    }
 
     return () => unsubscribe();
   }, [allowedRoles, userDepartmentId, filterByDepartment, requireEmailVerified]);

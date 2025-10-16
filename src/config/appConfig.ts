@@ -58,6 +58,10 @@ export const APP_SETTINGS = {
   SUPPORTED_IMAGE_FORMATS: ['image/jpeg', 'image/png', 'image/webp']
 } as const;
 
+// Realtime listeners global toggle
+// [RT-TOGGLE] קבע ל-false כדי לכבות onSnapshot בכל האפליקציה בלי למחוק קוד
+export const REALTIME_LISTENERS_ENABLED = true;
+
 // Route Paths
 export const ROUTES = {
   HOME: '/',

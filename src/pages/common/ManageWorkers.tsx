@@ -12,7 +12,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { doc, getDoc, onSnapshot, collection } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
@@ -84,53 +84,60 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
     fetchUserData();
   }, []);
 
-  // Load workers (real-time)
+  // Load workers once from consolidated map document
   useEffect(() => {
-    if (!departmentId) return;
+    const loadWorkersOnce = async () => {
+      if (!departmentId) return;
+      try {
+        const mapRef = doc(db, 'departments', departmentId, 'workers', 'index');
+        const mapSnap = await getDoc(mapRef);
+        const workersData: WorkerData[] = [];
+        if (mapSnap.exists()) {
+          const data = mapSnap.data() as any;
+          const workersMap = (data.workers || {}) as Record<string, any>;
+          Object.values(workersMap).forEach((entry: any) => {
+            const normalized: WorkerData = {
+              workerId: entry.workerId,
+              firstName: entry.firstName,
+              lastName: entry.lastName,
+              email: entry.email,
+              unit: entry.unit || '',
+              role: entry.role,
+              isOfficer: !!entry.isOfficer,
+              activity: entry.activity,
+              qualifications: entry.qualifications || [],
+              closingInterval: entry.closingInterval ?? 0,
+              createdAt: entry.createdAt,
+              updatedAt: entry.updatedAt,
+            } as any;
 
-    const workersRef = collection(db, 'departments', departmentId, 'workers');
-    
-    const unsubscribe = onSnapshot(workersRef, (snapshot) => {
-      const workersData: WorkerData[] = [];
-      
-      snapshot.forEach((doc) => {
-        const data = doc.data() as any;
-        const normalized: WorkerData = {
-          ...data,
-          // Backward-compat: prefer new field, fallback to legacy
-          closingIntervals: (data.closingIntervals ?? data.closingInterval ?? 0) as number,
-        };
-        
-        // Filter by role for admins (only show workers)
-        if (userRole === 'admin' && normalized.role !== 'worker') {
-          return;
+            // Filter by role for admins (only show workers)
+            if (userRole === 'admin' && normalized.role !== 'worker') return;
+            // Skip deleted
+            if (normalized.activity === 'deleted') return;
+
+            workersData.push(normalized);
+          });
         }
-        
-        // Don't show deleted users
-        if (normalized.activity === 'deleted') {
-          return;
-        }
-        
-        workersData.push(normalized);
-      });
-      
-      // Sort by name
+
+        // Sort by name
       workersData.sort((a, b) => {
-        const nameA = `${a.firstName} ${a.lastName}`.toLowerCase();
-        const nameB = `${b.firstName} ${b.lastName}`.toLowerCase();
-        return nameA.localeCompare(nameB, 'he');
-      });
-      
-      setOriginalWorkers(workersData);
-      setWorkers(workersData);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error loading workers:', error);
-      setMessage({ type: 'error', text: 'שגיאה בטעינת עובדים' });
-      setLoading(false);
-    });
+          const nameA = `${a.firstName} ${a.lastName}`.toLowerCase();
+          const nameB = `${b.firstName} ${b.lastName}`.toLowerCase();
+          return nameA.localeCompare(nameB, 'he');
+        });
 
-    return () => unsubscribe();
+        setOriginalWorkers(workersData);
+        setWorkers(workersData);
+        setLoading(false);
+      } catch (error) {
+        console.error('Error loading workers map:', error);
+        setMessage({ type: 'error', text: 'שגיאה בטעינת עובדים' });
+        setLoading(false);
+      }
+    };
+
+    loadWorkersOnce();
   }, [departmentId, userRole]);
 
   // Load task definitions for qualifications
@@ -215,7 +222,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
         const subdepartmentChanged = worker.unit !== original.unit;
 
         // Check if closingIntervals changed
-        const closingIntervalsChanged = (worker.closingIntervals ?? 0) !== (original.closingIntervals ?? 0);
+        const closingIntervalsChanged = (worker.closingInterval ?? 0) !== (original.closingInterval ?? 0);
 
         // Check if synced fields changed (email excluded as it cannot be changed)
         const syncedChanged = 
@@ -249,8 +256,8 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
           
           // Worker-only fields (both owner and admin can edit)
           if (qualificationsChanged) updateData.qualifications = worker.qualifications;
-          if (subdepartmentChanged) updateData.מחלקה = worker.unit;
-          if (closingIntervalsChanged) updateData.closingIntervals = worker.closingIntervals;
+          if (subdepartmentChanged) updateData.unit = worker.unit;
+          if (closingIntervalsChanged) updateData.closingInterval = worker.closingInterval;
           
           // Synced fields (only owner can edit)
           if (userRole === 'owner') {
@@ -298,7 +305,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
     setEditingWorker({ ...worker });
     
     // Setup closing interval state
-    const interval = worker.closingIntervals ?? 0;
+    const interval = worker.closingInterval ?? 0;
     if (interval >= 9 && interval <= 12) {
       setShowCustomIntervalInput(true);
       setCustomClosingInterval(interval);
@@ -451,11 +458,11 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
       // Keep current value if already custom, otherwise default to 9
       const defaultCustom = customClosingInterval || 9;
       setCustomClosingInterval(defaultCustom);
-      handleUpdateField('closingIntervals', defaultCustom);
+      handleUpdateField('closingInterval', defaultCustom);
     } else {
       setShowCustomIntervalInput(false);
       setCustomClosingInterval(null);
-      handleUpdateField('closingIntervals', parseInt(value));
+      handleUpdateField('closingInterval', parseInt(value));
     }
   };
 
@@ -465,7 +472,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
     const numValue = parseInt(value);
     if (!isNaN(numValue) && numValue >= 9 && numValue <= 12) {
       setCustomClosingInterval(numValue);
-      handleUpdateField('closingIntervals', numValue);
+      handleUpdateField('closingInterval', numValue);
     }
   };
 
@@ -659,7 +666,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                           {worker.qualifications.length} הסמכות
                         </td>
                         <td className="px-6 py-4 text-white">
-                          {getClosingIntervalLabel(worker.closingIntervals ?? 0)}
+                          {getClosingIntervalLabel(worker.closingInterval ?? 0)}
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex gap-2 justify-center">
@@ -840,7 +847,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                   אינטרוולי סגירות
                 </label>
                 <select
-                  value={showCustomIntervalInput ? 'custom' : String((editingWorker.closingIntervals ?? 0))}
+                  value={showCustomIntervalInput ? 'custom' : String((editingWorker.closingInterval ?? 0))}
                   onChange={(e) => handleClosingIntervalChange(e.target.value)}
                   className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-white/40"
                 >

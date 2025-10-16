@@ -31,7 +31,9 @@ function createEmptyEntry(): WorkerIndexEntry {
     primaryTasksMap: [],
     optimalClosingDates: [],
     preferences: [],
-    score: 0
+    score: 0,
+    closingInterval: 0,
+    qualifications: []
   };
 }
 
@@ -83,7 +85,37 @@ export async function upsertWorkerIndexEntry(
       updates.preferences ? [...existingEntry.preferences, ...updates.preferences] : existingEntry.preferences,
       MAX_PREFERENCES
     ),
-    score: updates.score !== undefined ? updates.score : existingEntry.score
+    score: updates.score !== undefined ? updates.score : existingEntry.score,
+    closingInterval: updates.closingInterval !== undefined ? updates.closingInterval : (existingEntry.closingInterval ?? 0),
+    qualifications: updates.qualifications !== undefined ? updates.qualifications : (existingEntry.qualifications || [])
+  };
+
+  await updateDoc(indexRef, {
+    [`workers.${workerId}`]: nextEntry,
+    updatedAt: serverTimestamp()
+  });
+}
+
+/**
+ * Set or update only the closingInterval for a worker's index entry.
+ */
+export async function setWorkerClosingInterval(
+  departmentId: string,
+  workerId: string,
+  closingInterval: number
+): Promise<void> {
+  const indexRef = doc(db, 'departments', departmentId, 'workersIndex', 'index');
+  const snap = await getDoc(indexRef);
+  if (!snap.exists()) {
+    await ensureWorkersIndex(departmentId);
+  }
+
+  const current = (await getDoc(indexRef)).data() as WorkersIndexDoc | undefined;
+  const existingEntry: WorkerIndexEntry = current?.workers?.[workerId] || createEmptyEntry();
+
+  const nextEntry: WorkerIndexEntry = {
+    ...existingEntry,
+    closingInterval: closingInterval ?? 0
   };
 
   await updateDoc(indexRef, {
@@ -274,6 +306,18 @@ export async function replaceWorkerPreferences(
     workers: nextWorkers,
     updatedAt: serverTimestamp()
   });
+
+  // Mirror preferences to byWorker doc under workers/index/byWorker/{workerId}
+  const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+  // Ensure document exists with minimal shape and update preferences only
+  await setDoc(
+    byWorkerRef,
+    {
+      preferences: clamped,
+      updatedAt: serverTimestamp()
+    },
+    { merge: true }
+  );
 }
 
 

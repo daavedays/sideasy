@@ -40,6 +40,8 @@ export interface WorkerIndexEntry {
   optimalClosingDates: Timestamp[];         // capped at 500 entries
   preferences: WorkerIndexPreference[];     // capped at 80 entries
   score: number;                            // integer, default 0
+  closingInterval: number;                  // integer, default 0
+  qualifications: string[];                 // worker qualifications for quick reads
 }
 
 /**

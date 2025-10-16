@@ -40,7 +40,7 @@ interface Worker {
   }[];
 }
 
-interface WorkerPreference { date: Timestamp; taskId: string | null; }
+interface WorkerPreference { date: Timestamp; taskId: string | null; status?: 'preferred' | 'blocked'; }
 
 type PreferenceAction = 'prefer' | 'blockDay' | 'blockTask' | 'clear';
 
@@ -163,38 +163,58 @@ const WorkerPreferences: React.FC = () => {
           console.warn('⚠️ No task definitions found for department:', departmentId);
         }
 
-        // Fetch ONLY current worker's data (cost optimization)
-        // Safe to use ! because we check auth.currentUser in useEffect guard above
-        const workerDocRef = doc(db, 'departments', departmentId, 'workers', auth.currentUser!.uid);
-        const workerDoc = await getDoc(workerDocRef);
+        // Load worker summary (name) from users and qualifications from workersIndex/byWorker fallback
+        const userDocRef = doc(db, 'users', auth.currentUser!.uid);
+        const userSnap = await getDoc(userDocRef);
+        const firstName = userSnap.exists() ? (userSnap.data() as any).firstName : '';
+        const lastName = userSnap.exists() ? (userSnap.data() as any).lastName : '';
 
-        if (!workerDoc.exists()) {
-          console.error('❌ Worker document not found');
-          setLoading(false);
-          return;
+        // Load qualifications from workersIndex first
+        const indexRef = doc(db, 'departments', departmentId, 'workersIndex', 'index');
+        const indexSnap = await getDoc(indexRef);
+        let qualifications: string[] = [];
+        let preferencesFromIndex: any[] = [];
+        if (indexSnap.exists()) {
+          const indexData = indexSnap.data() as any;
+          const entry = indexData.workers?.[auth.currentUser!.uid];
+          qualifications = entry?.qualifications || [];
+          preferencesFromIndex = entry?.preferences || [];
         }
 
-        const data = workerDoc.data();
+        // Fallback: read qualifications from byWorker if missing
+        if (!qualifications || qualifications.length === 0) {
+          const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', auth.currentUser!.uid);
+          const byWorkerSnap = await getDoc(byWorkerRef);
+          if (byWorkerSnap.exists()) {
+            const bw = byWorkerSnap.data() as any;
+            qualifications = bw.qualifications || qualifications;
+          }
+        }
+
         const worker: Worker = {
-          workerId: workerDoc.id,
-          firstName: data.firstName,
-          lastName: data.lastName,
-          qualifications: data.qualifications || [],
+          workerId: auth.currentUser!.uid,
+          firstName: firstName,
+          lastName: lastName,
+          qualifications: qualifications || [],
           preferences: []
         };
         setCurrentWorker(worker);
 
-        // Load preferences from workersIndex
-        const indexRef = doc(db, 'departments', departmentId, 'workersIndex', 'index');
-        const indexSnap = await getDoc(indexRef);
-        if (indexSnap.exists()) {
-          const indexData = indexSnap.data() as any;
-          const entry = indexData.workers?.[auth.currentUser!.uid];
-          setCurrentWorkerPreferences((entry?.preferences || []).map((p: any) => ({ date: p.date, taskId: p.taskId })));
+        // Use preferences from index if available; fallback to byWorker
+        if (preferencesFromIndex && preferencesFromIndex.length > 0) {
+          setCurrentWorkerPreferences(preferencesFromIndex.map((p: any) => ({ date: p.date, taskId: p.taskId ?? null, status: p.status || (p.taskId ? 'preferred' : 'blocked') })));
         } else {
-          setCurrentWorkerPreferences([]);
+          const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', auth.currentUser!.uid);
+          const byWorkerSnap = await getDoc(byWorkerRef);
+          if (byWorkerSnap.exists()) {
+            const bw = byWorkerSnap.data() as any;
+            const prefs = (bw.preferences || []).map((p: any) => ({ date: p.date, taskId: p.taskId ?? null, status: p.status || (p.taskId ? 'preferred' : 'blocked') }));
+            setCurrentWorkerPreferences(prefs);
+          } else {
+            setCurrentWorkerPreferences([]);
+          }
         }
-        console.log('✅ Loaded current worker data + preferences from index');
+        console.log('✅ Loaded worker info, qualifications and preferences');
 
       } catch (error) {
         console.error('❌ Error fetching data:', error);
@@ -226,25 +246,37 @@ const WorkerPreferences: React.FC = () => {
 
     currentWorkerPreferences.forEach((pref) => {
       const prefDate = pref.date.toDate();
-      
-      // Only include preferences within date range
-      if (prefDate >= start && prefDate <= end) {
-        const taskId = pref.taskId || 'blocked';
-        const key = getCellKey(taskId, prefDate);
-        
-        const status: CellStatus = pref.taskId ? 'preferred' : 'blocked';
-        
+      if (prefDate < start || prefDate > end) return;
+
+      const resolvedStatus: CellStatus = pref.status === 'blocked' ? 'blocked' : 'preferred';
+
+      // If taskId is provided, update that specific task cell
+      if (pref.taskId) {
+        const key = getCellKey(pref.taskId, prefDate);
         const workerInCell = {
           workerId: currentWorker.workerId,
           workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
-          status
+          status: resolvedStatus
         };
-
-        // Create cell with only current worker
         newCellData.set(key, {
           workers: [workerInCell],
-          taskId,
+          taskId: pref.taskId,
           date: prefDate
+        });
+      } else {
+        // Legacy or whole-day block without specific taskId: apply to all tasks
+        tasks.forEach((t) => {
+          const key = getCellKey(t.id, prefDate);
+          const workerInCell = {
+            workerId: currentWorker.workerId,
+            workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
+            status: 'blocked' as CellStatus
+          };
+          newCellData.set(key, {
+            workers: [workerInCell],
+            taskId: t.id,
+            date: prefDate
+          });
         });
       }
     });
@@ -278,7 +310,11 @@ const WorkerPreferences: React.FC = () => {
    * Handle preference action from modal
    */
   const handlePreferenceAction = (action: PreferenceAction) => {
-    if (!selectedCell || !currentWorker) return;
+    if (!selectedCell) return;
+
+    const workerId = currentWorker?.workerId || auth.currentUser?.uid || '';
+    if (!workerId) return;
+    const workerName = currentWorker ? `${currentWorker.firstName} ${currentWorker.lastName}` : '';
 
     const { taskId, date } = selectedCell;
     const key = getCellKey(taskId, date);
@@ -289,7 +325,7 @@ const WorkerPreferences: React.FC = () => {
       const existingCell = newCellData.get(key);
       if (existingCell) {
         const updatedWorkers = existingCell.workers.filter(
-          w => w.workerId !== currentWorker.workerId
+          w => w.workerId !== workerId
         );
         
         if (updatedWorkers.length > 0) {
@@ -307,15 +343,15 @@ const WorkerPreferences: React.FC = () => {
       // Add/update current worker's preferred task
       const existingCell = newCellData.get(key);
       const newWorkerData = {
-        workerId: currentWorker.workerId,
-        workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
+        workerId: workerId,
+        workerName: workerName,
         status: 'preferred' as CellStatus
       };
 
       if (existingCell) {
         // Check if current worker already has a preference here
         const workerIndex = existingCell.workers.findIndex(
-          w => w.workerId === currentWorker.workerId
+          w => w.workerId === workerId
         );
         
         if (workerIndex >= 0) {
@@ -338,14 +374,14 @@ const WorkerPreferences: React.FC = () => {
       // Block this specific task on this date for current worker
       const existingCell = newCellData.get(key);
       const newWorkerData = {
-        workerId: currentWorker.workerId,
-        workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
+        workerId: workerId,
+        workerName: workerName,
         status: 'blocked' as CellStatus
       };
 
       if (existingCell) {
         const workerIndex = existingCell.workers.findIndex(
-          w => w.workerId === currentWorker.workerId
+          w => w.workerId === workerId
         );
         
         if (workerIndex >= 0) {
@@ -367,14 +403,14 @@ const WorkerPreferences: React.FC = () => {
         const dayKey = getCellKey(task.id, date);
         const existingCell = newCellData.get(dayKey);
         const newWorkerData = {
-          workerId: currentWorker.workerId,
-          workerName: `${currentWorker.firstName} ${currentWorker.lastName}`,
+          workerId: workerId,
+          workerName: workerName,
           status: 'blocked' as CellStatus
         };
 
         if (existingCell) {
           const workerIndex = existingCell.workers.findIndex(
-            w => w.workerId === currentWorker.workerId
+            w => w.workerId === workerId
           );
           
           if (workerIndex >= 0) {
@@ -449,26 +485,46 @@ const WorkerPreferences: React.FC = () => {
 
       // Deprecated: existing preferences from workers doc are ignored; workersIndex is source of truth now
 
-      // Collect new preferences for current worker from cellData (current date range only)
-      const newPreferencesInRange: { date: Timestamp; taskId: string | null }[] = [];
-      
+      // Collect and normalize preferences per date (support both whole-day block and task-specific)
+      type DayAgg = { blocked: Set<string>; preferred: Set<string> };
+      const byDay = new Map<number, DayAgg>();
+
       Array.from(cellData.values()).forEach((cell) => {
-        // Find current worker in this cell
-        const currentWorkerInCell = cell.workers.find(
-          w => w.workerId === currentWorker.workerId
-        );
-        
-        if (currentWorkerInCell) {
-          // VALIDATION: Only include preferences for today or future dates
-          const cellDate = new Date(cell.date);
-          cellDate.setHours(0, 0, 0, 0);
-          
-          if (cellDate >= today) {
-            newPreferencesInRange.push({
-              date: Timestamp.fromDate(cell.date),
-              taskId: currentWorkerInCell.status === 'blocked' ? null : cell.taskId
-            });
-          }
+        const currentWorkerInCell = cell.workers.find(w => w.workerId === currentWorker.workerId);
+        if (!currentWorkerInCell) return;
+
+        const cellDate = new Date(cell.date);
+        cellDate.setHours(0, 0, 0, 0);
+        if (cellDate < today) return;
+
+        const key = cellDate.getTime();
+        const group = byDay.get(key) || { blocked: new Set<string>(), preferred: new Set<string>() };
+        if (currentWorkerInCell.status === 'blocked') {
+          group.blocked.add(cell.taskId);
+        } else if (currentWorkerInCell.status === 'preferred') {
+          group.preferred.add(cell.taskId);
+        }
+        byDay.set(key, group);
+      });
+
+      const allTaskIds = (tasks || []).map(t => t.id);
+      const newPreferencesInRange: { date: Timestamp; taskId: string | null; status: 'preferred' | 'blocked' }[] = [];
+      byDay.forEach((group, key) => {
+        const dateObj = new Date(key);
+        const ts = Timestamp.fromDate(dateObj);
+        // Whole-day block only when all tasks are blocked and no preferred tasks
+        const isWholeDayBlocked = group.preferred.size === 0 && group.blocked.size === allTaskIds.length && allTaskIds.length > 0;
+        if (isWholeDayBlocked) {
+          newPreferencesInRange.push({ date: ts, taskId: null, status: 'blocked' });
+        } else {
+          // Task-specific blocked entries
+          group.blocked.forEach(taskId => {
+            newPreferencesInRange.push({ date: ts, taskId, status: 'blocked' });
+          });
+          // Preferred entries
+          group.preferred.forEach(taskId => {
+            newPreferencesInRange.push({ date: ts, taskId, status: 'preferred' });
+          });
         }
       });
 
@@ -482,10 +538,15 @@ const WorkerPreferences: React.FC = () => {
         alert(`שים לב: ${filteredCount} בקשות לתאריכים שעברו לא נשמרו`);
       }
 
-      // Replace preferences in workersIndex for current worker only
-      const mergedPreferences = newPreferencesInRange; // replacing range chunk (no merge with legacy storage)
-      const { replaceWorkerPreferences } = await import('../../lib/firestore/workersIndex');
-      await replaceWorkerPreferences(departmentId, currentWorker.workerId, mergedPreferences as any);
+      // Merge-by-date inside the selected range only (update only changed days)
+      const { setWorkerPreferencesByWorkerForRange } = await import('../../lib/firestore/workers');
+      await setWorkerPreferencesByWorkerForRange(
+        departmentId,
+        currentWorker.workerId,
+        new Date(startDate),
+        new Date(endDate),
+        newPreferencesInRange as any
+      );
 
       setHasUnsavedChanges(false);
       alert('העדפות נשמרו בהצלחה!');
