@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { signIn } from '../../lib/auth/authHelpers';
 import { getDashboardRoute } from '../../lib/auth/authHelpers';
+import Input from '../../components/ui/Input';
+import Button from '../../components/ui/Button';
 
 /**
  * Login Form Component
@@ -65,6 +67,8 @@ const LoginForm: React.FC = () => {
     }
   };
 
+  const isFormValid = useMemo(() => !!formData.email && !!formData.password, [formData.email, formData.password]);
+
   return (
     <div className="space-y-6">
       {/* Welcome Header */}
@@ -93,40 +97,30 @@ const LoginForm: React.FC = () => {
       {/* Login Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Email Field */}
-        <div className="space-y-2">
-          <label htmlFor="email" className="block text-sm font-medium text-white/90">
-            כתובת אימייל
-          </label>
-          <input
-            type="email"
-            id="email"
-            name="email"
-            value={formData.email}
-            onChange={handleChange}
-            placeholder="הכנס כתובת אימייל"
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            dir="ltr"
-          />
-        </div>
+        <Input
+          label="כתובת אימייל"
+          id="email"
+          name="email"
+          type="email"
+          value={formData.email}
+          onChange={handleChange}
+          placeholder="הכנס כתובת אימייל"
+          dir="ltr"
+          required
+        />
 
         {/* Password Field */}
-        <div className="space-y-2">
-          <label htmlFor="password" className="block text-sm font-medium text-white/90">
-            סיסמה
-          </label>
-          <input
-            type="password"
-            id="password"
-            name="password"
-            value={formData.password}
-            onChange={handleChange}
-            placeholder="הכנס סיסמה"
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            dir="ltr"
-          />
-        </div>
+        <Input
+          label="סיסמה"
+          id="password"
+          name="password"
+          type="password"
+          value={formData.password}
+          onChange={handleChange}
+          placeholder="הכנס סיסמה"
+          dir="ltr"
+          required
+        />
 
         {/* Remember Me & Forgot Password */}
         <div className="flex items-center justify-between text-sm">
@@ -149,13 +143,9 @@ const LoginForm: React.FC = () => {
         </div>
 
         {/* Login Button */}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-3 px-6 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold rounded-xl hover:from-purple-700 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-white/30 transition-all duration-300 transform hover:scale-[1.02] shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-        >
+        <Button type="submit" fullWidth blink={!loading && isFormValid} disabled={loading}>
           {loading ? 'מתחבר...' : 'התחבר'}
-        </button>
+        </Button>
       </form>
 
     </div>

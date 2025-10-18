@@ -28,6 +28,7 @@ import {
   increment
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
+import { refreshSummaryForWorker } from './statistics';
 
 // ============================================================================
 // TYPES
@@ -84,6 +85,7 @@ interface WorkerMapEntry {
   activity: 'active' | 'deleted' | 'inactive';
   qualifications: string[];
   closingInterval: number;
+  score: number;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -124,6 +126,7 @@ async function upsertWorkersMapEntry(
     activity: (updates.activity as any) ?? existing?.activity ?? 'active',
     qualifications: updates.qualifications ?? existing?.qualifications ?? [],
     closingInterval: updates.closingInterval ?? existing?.closingInterval ?? 0,
+    score: (updates as any).score ?? (existing as any)?.score ?? 0,
     createdAt: existing?.createdAt ?? (serverTimestamp() as Timestamp),
     updatedAt: serverTimestamp() as Timestamp
   };
@@ -261,7 +264,9 @@ export async function createWorkerDocument(
       isOfficer: false,
       activity: 'active',
       qualifications: [],
-      closingInterval: 0
+      closingInterval: 0,
+      // initialize default performance score
+      score: 0 as any
     } as Partial<WorkerMapEntry>);
 
     
@@ -284,11 +289,14 @@ export async function createWorkerDocument(
         activity: 'active',
         qualifications: [],
         closingInterval: 0,
-        // assignment-related fields (worker-specific)
-        primaryTasksMap: [], // Array<{ startDate: Timestamp; endDate: Timestamp; taskId: string; taskName: string; scheduleId?: string }>
-        secondaryTaskDates: [], // Array<{ date: Timestamp; taskId: string }>
+        // default performance score for new workers
+        score: 0,
+        // worker-editable field
         preferences: [], // Array<{ date: Timestamp; taskId: string | null }>
-        closingHistory: [], // Array<ClosingHistoryEntry> (initialized empty)
+        // statistics-related fields (admin-written)
+        closingHistory: [], // Array<{ friday: Timestamp; source: 'primary'|'secondary'; scheduleId: string }>
+        futureClosings: [], // Array<{ friday: Timestamp; source: 'primary'|'secondary'; scheduleId: string }>
+        actualClosingInterval: 0, // rolling average interval in weeks
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       },
@@ -410,6 +418,8 @@ export async function updateWorkerWithSync(
       if (updates.closingInterval !== undefined) byWorkerPayload.closingInterval = updates.closingInterval;
 
       await setDoc(byWorkerRef, byWorkerPayload, { merge: true });
+      // Keep statistics summary in sync for this worker (non-blocking)
+      try { await refreshSummaryForWorker(departmentId, workerId); } catch {}
     }
 
     
@@ -439,34 +449,28 @@ export async function changeWorkerRole(
   currentRole: 'admin' | 'worker' | 'owner'
 ): Promise<{ success: boolean; message: string }> {
   try {
-    // Can't change to/from owner role
+    const userRef = doc(db, 'users', workerId);
+    const deptRef = doc(db, 'departments', departmentId);
+
+    // Guard: cannot change owner role via this function
     if (currentRole === 'owner') {
-      return {
-        success: false,
-        message: 'Cannot change owner role'
-      };
+      return { success: false, message: 'Cannot change owner role' };
     }
 
     // No change needed
     if (newRole === currentRole) {
-      return {
-        success: true,
-        message: 'No role change needed'
-      };
+      return { success: true, message: 'No role change needed' };
     }
-
-    const userRef = doc(db, 'users', workerId);
-    const deptRef = doc(db, 'departments', departmentId);
 
     const timestamp = serverTimestamp();
 
     // Determine count changes
     const countUpdates: any = {};
-    if (newRole === 'admin') {
+    if (newRole === 'admin' && currentRole === 'worker') {
       // worker → admin
       countUpdates.adminCount = increment(1);
       countUpdates.workerCount = increment(-1);
-    } else {
+    } else if (newRole === 'worker' && currentRole === 'admin') {
       // admin → worker
       countUpdates.adminCount = increment(-1);
       countUpdates.workerCount = increment(1);
@@ -487,6 +491,9 @@ export async function changeWorkerRole(
       const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
       await setDoc(byWorkerRef, { role: newRole, updatedAt: timestamp }, { merge: true });
     }
+
+  // Update statistics summary for this worker (role/name may affect views)
+  try { await refreshSummaryForWorker(departmentId, workerId); } catch {}
 
     return {
       success: true,
@@ -554,6 +561,9 @@ export async function softDeleteWorker(
       const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
       await setDoc(byWorkerRef, { activity: 'deleted', updatedAt: timestamp }, { merge: true });
     }
+
+  // Update statistics summary for this worker (activity affects totals/UI)
+  try { await refreshSummaryForWorker(departmentId, workerId); } catch {}
 
     // TODO: Remove from future schedules (when schedules are implemented)
 
@@ -698,5 +708,100 @@ export async function setWorkerPreferencesByWorkerForRange(
     },
     { merge: true }
   );
+}
+
+// ==========================================================================
+// LEDGER MAINTENANCE (RE-BUCKET CLOSINGS HISTORY/FUTURE)
+// ==========================================================================
+
+/**
+ * Re-bucket a worker's closing ledger by current time, pruning and
+ * recomputing actualClosingInterval. Writes only if there is any stale
+ * entry (future item in the past) or ordering/pruning changes.
+ *
+ * Used by background sweeps to keep data fresh without relying on saves.
+ */
+export async function rebucketWorkerLedgerIfStale(
+  departmentId: string,
+  workerId: string
+): Promise<{ updated: boolean }> {
+  const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+  const snap = await getDoc(byWorkerRef);
+  if (!snap.exists()) return { updated: false };
+
+  type ClosingEntry = { friday: Timestamp; source: 'primary'|'secondary'; scheduleId: string };
+  const data = (snap.data() as any) || {};
+  const existingHistory: ClosingEntry[] = Array.isArray(data.closingHistory) ? data.closingHistory : [];
+  const existingFuture: ClosingEntry[] = Array.isArray(data.futureClosings) ? data.futureClosings : [];
+
+  // If nothing in ledger, nothing to do
+  if (existingHistory.length === 0 && existingFuture.length === 0) {
+    return { updated: false };
+  }
+
+  const nowNoon = new Date();
+  nowNoon.setHours(12, 0, 0, 0);
+
+  // Classify all entries by current time
+  const allEntries: ClosingEntry[] = [...existingHistory, ...existingFuture].filter(Boolean);
+  let newHistory: ClosingEntry[] = [];
+  let newFuture: ClosingEntry[] = [];
+  for (const e of allEntries) {
+    const d = (e.friday as Timestamp).toDate();
+    if (d < nowNoon) newHistory.push(e); else newFuture.push(e);
+  }
+
+  // Sort
+  newHistory = newHistory.sort((a, b) => a.friday.toMillis() - b.friday.toMillis());
+  newFuture = newFuture.sort((a, b) => a.friday.toMillis() - b.friday.toMillis());
+
+  // Prune
+  const HISTORY_CAP = 150;
+  if (newHistory.length > HISTORY_CAP) {
+    newHistory = newHistory.slice(newHistory.length - HISTORY_CAP);
+  }
+  const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+  const horizon = new Date(nowNoon.getTime() + ONE_YEAR_MS);
+  newFuture = newFuture.filter((e) => e.friday.toDate() <= horizon);
+
+  // Compute actualClosingInterval (weeks) from history
+  let actualIntervalWeeks = 0;
+  if (newHistory.length >= 2) {
+    let sum = 0; let gaps = 0;
+    for (let i = 1; i < newHistory.length; i++) {
+      const prev = newHistory[i - 1].friday.toDate();
+      const cur = newHistory[i].friday.toDate();
+      const diffDays = Math.floor((cur.getTime() - prev.getTime()) / (24 * 60 * 60 * 1000));
+      sum += diffDays / 7; gaps += 1;
+    }
+    actualIntervalWeeks = Math.round(sum / Math.max(1, gaps));
+  }
+
+  // Derive lastClosingDate as the latest history Friday (if any)
+  const lastClosingDate: Timestamp | null = newHistory.length > 0
+    ? newHistory[newHistory.length - 1].friday
+    : (data.lastClosingDate || null);
+
+  // Detect if an update is required
+  const sameLength = newHistory.length === existingHistory.length && newFuture.length === existingFuture.length;
+  const sameOrder = sameLength
+    && newHistory.every((e, i) => existingHistory[i]?.friday?.toMillis?.() === e.friday.toMillis() && existingHistory[i]?.scheduleId === e.scheduleId && existingHistory[i]?.source === e.source)
+    && newFuture.every((e, i) => existingFuture[i]?.friday?.toMillis?.() === e.friday.toMillis() && existingFuture[i]?.scheduleId === e.scheduleId && existingFuture[i]?.source === e.source);
+
+  const intervalUnchanged = (typeof data.actualClosingInterval === 'number' ? data.actualClosingInterval : null) === actualIntervalWeeks;
+  const lastClosingUnchanged = (data.lastClosingDate?.toMillis?.() ?? null) === (lastClosingDate?.toMillis?.() ?? null);
+
+  const needsWrite = !(sameOrder && intervalUnchanged && lastClosingUnchanged);
+  if (!needsWrite) return { updated: false };
+
+  await setDoc(byWorkerRef, {
+    closingHistory: newHistory,
+    futureClosings: newFuture,
+    actualClosingInterval: actualIntervalWeeks,
+    lastClosingDate: lastClosingDate ?? null,
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+
+  return { updated: true };
 }
 

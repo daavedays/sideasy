@@ -32,6 +32,7 @@ export interface PrimaryTaskTableProps {
   onCellClick: (workerId: string, weekNumber: number, weekDates: { start: Date; end: Date }) => void;
   isReadOnly?: boolean;
   year?: number; // For display in header
+  highlightWorkerId?: string;
 }
 
 const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
@@ -42,12 +43,12 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
   assignments,
   onCellClick,
   isReadOnly = false,
-  year
+  year,
+  highlightWorkerId
 }) => {
   // Log when assignments change
   React.useEffect(() => {
-    console.log('PrimaryTaskTable re-rendered, assignments size:', assignments.size);
-    console.log('All assignments:', Array.from(assignments.entries()));
+    // lightweight debug only in dev
   }, [assignments]);
 
   /**
@@ -56,9 +57,6 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
   const getAssignment = (workerId: string, weekNumber: number): Assignment | undefined => {
     const key = generateCellKey(workerId, weekNumber);
     const assignment = assignments.get(key);
-    if (assignment) {
-      console.log('getAssignment found:', { workerId, weekNumber, key, assignment });
-    }
     return assignment;
   };
 
@@ -83,21 +81,29 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
    * Render worker row (regular or admin)
    */
   const renderWorkerRow = (worker: Worker, isAdmin: boolean = false) => {
+    const isHighlighted = !!highlightWorkerId && worker.workerId === highlightWorkerId;
+    const baseBg = isAdmin
+      ? 'bg-gradient-to-l from-orange-600/30 to-amber-600/30 backdrop-blur-sm'
+      : 'bg-gradient-to-l from-blue-600/20 to-cyan-600/20 backdrop-blur-sm';
+    const nameCellExtras = isHighlighted ? ' shadow-md' : '';
+    const nameCellBg = baseBg;
+
     return (
       <React.Fragment key={worker.workerId}>
         {/* Worker Name Cell - STICKY RIGHT (first in RTL grid) */}
         <div
           className={`
             sticky right-0 z-20
-            flex items-center justify-center px-4 py-3
+            flex items-center justify-center px-4 py-3 relative
             border-l-2 border-white/20
-            ${isAdmin 
-              ? 'bg-gradient-to-l from-orange-600/30 to-amber-600/30 backdrop-blur-sm' 
-              : 'bg-gradient-to-l from-blue-600/20 to-cyan-600/20 backdrop-blur-sm'
-            }
+            ${nameCellBg}
+            ${nameCellExtras}
           `}
           style={{ minWidth: '180px' }}
         >
+          {isHighlighted && (
+            <div className="absolute inset-0 rounded-lg bg-emerald-500/20 ring-2 ring-emerald-400/60 pointer-events-none" />
+          )}
           <div className="text-white font-semibold text-sm text-center">
             {isAdmin && (
               <span className="ml-2 text-xs text-orange-300">מנהל</span>
@@ -110,6 +116,7 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
         {weeks.map((week) => {
           const assignment = getAssignment(worker.workerId, week.weekNumber);
           const isDisabled = isReadOnly;
+          const highlightCellExtras = isHighlighted ? ' relative' : '';
 
           return (
             <button
@@ -129,9 +136,13 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
                   : 'bg-slate-800/30 border-slate-600/30 border-opacity-50'
                 }
                 ${!isDisabled ? 'cursor-pointer hover:shadow-lg' : 'cursor-not-allowed opacity-70'}
+                ${highlightCellExtras}
               `}
               style={getCellStyle(assignment)}
             >
+              {isHighlighted && (
+                <div className="absolute inset-0 rounded-lg ring-2 ring-emerald-400/40 bg-emerald-500/10 pointer-events-none" />
+              )}
               {assignment && (
                 <div className="text-center w-full px-1">
                   <div className="text-white font-bold text-sm leading-tight">

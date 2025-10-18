@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
-import { doc, getDoc, collection, query, where, onSnapshot, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, onSnapshot, getDocs, orderBy } from 'firebase/firestore';
 import { auth, db } from '../../config/firebase';
 import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
+import { useRoleContext } from '../../context/RoleContext';
 
 /**
  * Header Component
@@ -26,31 +27,36 @@ interface UserData {
 const Header: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const roleCtx = useRoleContext();
   const [userData, setUserData] = useState<UserData | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
+  const [scheduleNotificationsCount, setScheduleNotificationsCount] = useState(0);
   const isDashboardRoute = ['/developer', '/owner', '/admin', '/worker'].includes(location.pathname);
 
   // Don't show header on login/auth pages
   const isAuthPage = location.pathname === '/' || location.pathname === '/login';
   
   useEffect(() => {
-    const fetchUserData = async () => {
-      if (auth.currentUser && !isAuthPage) {
-        try {
-          const userDocRef = doc(db, 'users', auth.currentUser.uid);
-          const userDocSnap = await getDoc(userDocRef);
-          if (userDocSnap.exists()) {
-            setUserData(userDocSnap.data() as UserData);
-          }
-        } catch (error) {
-          console.error('Error fetching user data:', error);
+    if (isAuthPage) return;
+    // Prefer RoleContext for live updates; fallback fetch if missing
+    if (roleCtx?.userData) {
+      setUserData(roleCtx.userData as any);
+      return;
+    }
+    (async () => {
+      if (!auth.currentUser) return;
+      try {
+        const userDocRef = doc(db, 'users', auth.currentUser.uid);
+        const userDocSnap = await getDoc(userDocRef);
+        if (userDocSnap.exists()) {
+          setUserData(userDocSnap.data() as UserData);
         }
+      } catch (error) {
+        console.error('Error fetching user data:', error);
       }
-    };
-
-    fetchUserData();
-  }, [isAuthPage]);
+    })();
+  }, [isAuthPage, roleCtx?.userData]);
 
   // Real-time pending approvals counter for developer/owner/admin
   useEffect(() => {
@@ -99,6 +105,48 @@ const Header: React.FC = () => {
           computeCount(snap.docs);
         } catch (e) {
           console.error('Error counting pending approvals:', e);
+        }
+      })();
+    }
+
+    return () => unsubscribe();
+  }, [userData?.departmentId, userData?.role]);
+
+  // Real-time notifications (combined schedule published) for owner/admin/worker
+  useEffect(() => {
+    if (!userData?.role || !userData?.departmentId) return;
+
+    const notifQuery = query(
+      collection(db, 'departments', userData.departmentId, 'notifications'),
+      orderBy('createdAt', 'desc')
+    );
+
+    let unsubscribe = () => {};
+    const computeCount = (docs: Array<any>) => {
+      const uid = auth.currentUser?.uid;
+      let count = 0;
+      docs.forEach((d: any) => {
+        const data = (d.data ? d.data() : d) as any;
+        if (data?.type !== 'combined_schedule_published') return;
+        const readBy: string[] = Array.isArray(data.readBy) ? data.readBy : [];
+        if (uid && !readBy.includes(uid)) count += 1;
+      });
+      setScheduleNotificationsCount(count);
+    };
+
+    if (REALTIME_LISTENERS_ENABLED) {
+      unsubscribe = onSnapshot(notifQuery, (snapshot: any) => {
+        computeCount(snapshot.docs as any[]);
+      }, (error: any) => {
+        console.error('Error fetching notifications:', error);
+      });
+    } else {
+      (async () => {
+        try {
+          const snap = await getDocs(notifQuery);
+          computeCount(snap.docs);
+        } catch (e) {
+          console.error('Error counting notifications:', e);
         }
       })();
     }
@@ -278,18 +326,24 @@ const Header: React.FC = () => {
               </div>
             )}
             {/* Notifications (owner/admin only) */}
-            {(userData?.role === 'owner' || userData?.role === 'admin' || userData?.role === 'developer') && (
+            {(userData?.role === 'owner' || userData?.role === 'admin' || userData?.role === 'developer' || userData?.role === 'worker') && (
               <button
-                onClick={handleApprovalsClick}
+                onClick={() => {
+                  if (userData?.role === 'worker') {
+                    navigate('/worker/combined-schedule');
+                    return;
+                  }
+                  handleApprovalsClick();
+                }}
                 className="relative p-2 text-white/90 hover:text-white hover:bg-white/10 rounded-lg transition-all duration-200"
                 aria-label="התראות"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-5 5v-5zM12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
-                {pendingApprovalsCount > 0 && (
+                {(pendingApprovalsCount > 0 || scheduleNotificationsCount > 0) && (
                   <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 min-w-[1.25rem] px-1.5 flex items-center justify-center">
-                    {pendingApprovalsCount}
+                    {userData?.role === 'worker' ? scheduleNotificationsCount : (pendingApprovalsCount + scheduleNotificationsCount)}
                   </span>
                 )}
               </button>

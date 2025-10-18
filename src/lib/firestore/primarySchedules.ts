@@ -42,7 +42,7 @@ import {
 } from '../utils/firestoreConverters';
 import { detectChangedWorkers } from '../utils/assignmentChangeDetector';
 import { formatDateFull, formatDateRange } from '../utils/weekUtils';
-import { TaskEntry } from './workers';
+import { TaskEntry, rebucketWorkerLedgerIfStale } from './workers';
 
 // assignmentsMap field key is used below; no combined document used anymore
 
@@ -332,6 +332,21 @@ export const getScheduleAssignments = async (
 };
 
 /**
+ * Process an array of async tasks in bounded concurrency batches.
+ */
+async function processInBatches<T>(
+  items: T[],
+  batchSize: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  if (batchSize <= 0) batchSize = 1;
+  for (let i = 0; i < items.length; i += batchSize) {
+    const slice = items.slice(i, i + batchSize);
+    await Promise.all(slice.map((it) => worker(it)));
+  }
+}
+
+/**
  * Get a specific schedule by ID
  * 
  * @param departmentId - Department ID
@@ -419,8 +434,92 @@ export const deleteSchedule = async (
   scheduleId: string
 ): Promise<void> => {
   try {
+    // Load existing schedule to compute affected workers and stats deltas
     const scheduleRef = doc(db, 'departments', departmentId, 'primarySchedules', scheduleId);
+    const snap = await getDoc(scheduleRef);
+
+    let affectedWorkerIds: Set<string> = new Set();
+    let prevAssignments = new Map<string, Assignment>();
+    if (snap.exists()) {
+      const data = (snap.data() as any) || {};
+      const assignments = (data.assignmentsMap || {}) as Record<string, any>;
+      Object.entries(assignments).forEach(([key, raw]) => {
+        const a = raw as any;
+        affectedWorkerIds.add(String(a.workerId || '').trim());
+        prevAssignments.set(key, {
+          ...a,
+          startDate: a.startDate.toDate(),
+          endDate: a.endDate.toDate()
+        } as Assignment);
+      });
+    }
+
+    // Delete schedule doc
     await writeBatch(db).delete(scheduleRef).commit();
+
+    // Clean worker ledgers: remove all entries from this scheduleId and re-bucket
+    try {
+      const promises: Promise<void>[] = [];
+      affectedWorkerIds.forEach((wid) => {
+        const p = (async () => {
+          const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', wid);
+          const bySnap = await getDoc(byWorkerRef);
+          if (!bySnap.exists()) return;
+          type ClosingEntry = { friday: Timestamp; source: 'primary'|'secondary'; scheduleId: string };
+          const data = (bySnap.data() as any) || {};
+          const history: ClosingEntry[] = Array.isArray(data.closingHistory) ? data.closingHistory : [];
+          const future: ClosingEntry[] = Array.isArray(data.futureClosings) ? data.futureClosings : [];
+          const filtered = [...history, ...future].filter((e) => e && e.scheduleId !== scheduleId);
+
+          const nowNoon = new Date(); nowNoon.setHours(12,0,0,0);
+          let newHistory: ClosingEntry[] = []; let newFuture: ClosingEntry[] = [];
+          filtered.forEach((e) => {
+            const d = e.friday.toDate();
+            if (d < nowNoon) newHistory.push(e); else newFuture.push(e);
+          });
+          newHistory = newHistory.sort((a,b) => a.friday.toMillis() - b.friday.toMillis());
+          newFuture = newFuture.sort((a,b) => a.friday.toMillis() - b.friday.toMillis());
+
+          const HISTORY_CAP = 150;
+          if (newHistory.length > HISTORY_CAP) newHistory = newHistory.slice(newHistory.length - HISTORY_CAP);
+          const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+          const horizon = new Date(nowNoon.getTime() + ONE_YEAR_MS);
+          newFuture = newFuture.filter((e) => e.friday.toDate() <= horizon);
+
+          let actualIntervalWeeks = 0;
+          if (newHistory.length >= 2) {
+            let sum = 0; let gaps = 0;
+            for (let i=1;i<newHistory.length;i++) {
+              const prev = newHistory[i-1].friday.toDate();
+              const cur = newHistory[i].friday.toDate();
+              const diffDays = Math.floor((cur.getTime()-prev.getTime())/(24*60*60*1000));
+              sum += diffDays/7; gaps += 1;
+            }
+            actualIntervalWeeks = Math.round(sum/Math.max(1,gaps));
+          }
+          const lastClosingDate = newHistory.length > 0 ? newHistory[newHistory.length-1].friday : (data.lastClosingDate || null);
+
+          await setDoc(byWorkerRef, {
+            closingHistory: newHistory,
+            futureClosings: newFuture,
+            actualClosingInterval: actualIntervalWeeks,
+            lastClosingDate,
+            updatedAt: Timestamp.now()
+          }, { merge: true });
+        })();
+        promises.push(p);
+      });
+      await Promise.all(promises);
+    } catch {}
+
+    // Update statistics summary with negative primary deltas for affected workers
+    try {
+      const { updateSummaryForPrimaryDelta } = await import('./statistics');
+      // After deletion, new assignments are empty map for this schedule
+      const empty = new Map<string, Assignment>();
+      const changed = new Set<string>(Array.from(affectedWorkerIds));
+      await updateSummaryForPrimaryDelta(departmentId, prevAssignments, empty, changed);
+    } catch {}
   } catch (error) {
     console.error('Error deleting schedule:', error);
     throw error;
@@ -722,7 +821,85 @@ const updateWorkerTaskData = async (
       ? mandatoryDatesArray[mandatoryDatesArray.length - 1]
       : null;
 
-    
+    // === Update byWorker ledger (closingHistory + futureClosings + actualClosingInterval) ===
+    try {
+      const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+      const byWorkerSnap = await getDoc(byWorkerRef);
+      const bwData = (byWorkerSnap.exists() ? (byWorkerSnap.data() as any) : {}) || {};
+
+      type ClosingEntry = { friday: Timestamp; source: 'primary' | 'secondary'; scheduleId: string };
+      const existingHistory: ClosingEntry[] = Array.isArray(bwData.closingHistory) ? bwData.closingHistory : [];
+      const existingFuture: ClosingEntry[] = Array.isArray(bwData.futureClosings) ? bwData.futureClosings : [];
+
+      // Remove any entries originating from this scheduleId
+      const historySansSchedule = existingHistory.filter((e) => e && e.scheduleId !== scheduleId);
+      const futureSansSchedule = existingFuture.filter((e) => e && e.scheduleId !== scheduleId);
+
+      // Fridays derived from CURRENT schedule assignments only
+      const fridaysForThisSchedule: Date[] = Array.from(allFridays).map((iso) => {
+        const d = new Date(iso);
+        // normalize to noon to avoid DST boundary issues when stored as Timestamp
+        d.setHours(12, 0, 0, 0);
+        return d;
+      });
+
+      const nowNoon = new Date();
+      nowNoon.setHours(12, 0, 0, 0);
+
+      const additions: ClosingEntry[] = fridaysForThisSchedule.map((d) => ({ friday: Timestamp.fromDate(d), source: 'primary', scheduleId }));
+
+      // Re-bucket ALL entries (existing from other schedules + current additions) by current time
+      const allEntries: ClosingEntry[] = [
+        ...historySansSchedule,
+        ...futureSansSchedule,
+        ...additions,
+      ];
+
+      let newHistory: ClosingEntry[] = [];
+      let newFuture: ClosingEntry[] = [];
+      for (const e of allEntries) {
+        const d = e.friday.toDate();
+        if (d < nowNoon) newHistory.push(e); else newFuture.push(e);
+      }
+
+      newHistory = newHistory.sort((a, b) => a.friday.toMillis() - b.friday.toMillis());
+      newFuture = newFuture.sort((a, b) => a.friday.toMillis() - b.friday.toMillis());
+
+      // Prune
+      const HISTORY_CAP = 150; // ~5-10 years
+      if (newHistory.length > HISTORY_CAP) {
+        newHistory = newHistory.slice(newHistory.length - HISTORY_CAP);
+      }
+      const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+      const horizon = new Date(nowNoon.getTime() + ONE_YEAR_MS);
+      newFuture = newFuture.filter((e) => e.friday.toDate() <= horizon);
+
+      // Calculate actual closing interval (weeks) using newHistory
+      let actualIntervalWeeks = 0;
+      if (newHistory.length >= 2) {
+        let sumWeeks = 0; let gaps = 0;
+        for (let i = 1; i < newHistory.length; i++) {
+          const prev = newHistory[i - 1].friday.toDate();
+          const cur = newHistory[i].friday.toDate();
+          const diffDays = Math.floor((cur.getTime() - prev.getTime()) / (24 * 60 * 60 * 1000));
+          sumWeeks += diffDays / 7; gaps += 1;
+        }
+        actualIntervalWeeks = Math.round(sumWeeks / Math.max(1, gaps));
+      }
+
+      // Last closing date derived from latest history entry
+      const derivedLastClosing = newHistory.length > 0 ? newHistory[newHistory.length - 1].friday : (bwData.lastClosingDate || null);
+
+      await setDoc(byWorkerRef, {
+        closingHistory: newHistory,
+        futureClosings: newFuture,
+        actualClosingInterval: actualIntervalWeeks,
+        lastClosingDate: derivedLastClosing,
+        updatedAt: Timestamp.now(),
+      }, { merge: true });
+    } catch (e) {
+      console.warn('byWorker ledger update failed (non-fatal):', e);
+    }
 
     // Update only statistics and updatedAt on workers doc
     const statsUpdate: any = {
@@ -864,14 +1041,16 @@ export const saveScheduleWithWorkerUpdates = async (
     const isEdit = !!existingScheduleId;
     const changedWorkerIds = detectChangedWorkers(originalAssignmentsMap, assignments);
 
-    // Step 7: Update changed workers' data (in parallel)
+    // Step 7: Update changed workers' data with bounded concurrency to reduce tail latency
     const workerMandatoryDates = new Map<string, Date[]>();
 
     // Build a fast lookup for weekNumber -> week end date (Saturday)
     const weekEndByNumber = new Map<number, Date>();
-    weeks.forEach(w => weekEndByNumber.set(w.weekNumber, w.endDate));
+    weeks.forEach((w) => weekEndByNumber.set(w.weekNumber, w.endDate));
 
-    const workerUpdatePromises = Array.from(changedWorkerIds).map(async (workerId) => {
+    const changedIdsArray = Array.from(changedWorkerIds);
+    const CONCURRENCY = 20;
+    await processInBatches<string>(changedIdsArray, CONCURRENCY, async (workerId) => {
       const workerAssignments = assignmentsByWorker.get(workerId) || [];
       const mandatoryDates = await updateWorkerTaskData(
         departmentId,
@@ -882,11 +1061,14 @@ export const saveScheduleWithWorkerUpdates = async (
         isEdit
       );
       workerMandatoryDates.set(workerId, mandatoryDates);
-
-      
     });
 
-    await Promise.all(workerUpdatePromises);
+    // Optional safety: re-bucket ledgers to ensure ordering/pruning is consistent (writes only when needed)
+    try {
+      await processInBatches<string>(changedIdsArray, CONCURRENCY, async (wid) => {
+        try { await rebucketWorkerLedgerIfStale(departmentId, wid); } catch {}
+      });
+    } catch {}
 
     console.log(`✅ Schedule ${scheduleId} saved with updates for ${changedWorkerIds.size} workers`);
     
@@ -895,6 +1077,7 @@ export const saveScheduleWithWorkerUpdates = async (
     // Use originalAssignmentsMap loaded in Step 1 (before updates) for accurate change detection
     try {
       const { updateOptimalClosingDates } = await import('./closingScheduleUpdater');
+      const { updateSummaryForPrimaryDelta } = await import('./statistics');
       
       console.log(`🔍 Calling updateOptimalClosingDates with ${originalAssignmentsMap.size} original assignments vs ${assignments.size} new assignments`);
       
@@ -907,6 +1090,13 @@ export const saveScheduleWithWorkerUpdates = async (
       );
       
       console.log(`✅ Updated optimal closing dates for ${updatedWorkerIds.length} workers`);
+
+      // Update department statistics summary (primary deltas)
+      try {
+        await updateSummaryForPrimaryDelta(departmentId, originalAssignmentsMap, assignments, changedWorkerIds);
+      } catch (e) {
+        console.warn('[Stats] Primary summary update failed (non-fatal):', e);
+      }
     } catch (error) {
       // Don't fail the entire save if closing date calculation fails
       console.error('⚠️ Error calculating optimal closing dates (schedule still saved):', error);

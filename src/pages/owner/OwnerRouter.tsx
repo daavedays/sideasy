@@ -16,6 +16,7 @@ import OwnerTaskSettings from './OwnerTaskSettings';
 import ManageWorkersOwner from './ManageWorkersOwner';
 import PrimaryTasksDash from '../common/PrimaryTasksDash';
 import PrimaryTasksTableView from '../common/PrimaryTasksTableView';
+import StatisticsPage from '../common/StatisticsPage';
 
 const OwnerRouter: React.FC = () => {
   return (
@@ -27,6 +28,7 @@ const OwnerRouter: React.FC = () => {
       <Route path="primary-tasks/table-view" element={<PrimaryTasksTableView />} />
       <Route path="settings" element={<OwnerSettings />} />
       <Route path="settings/tasks" element={<OwnerTaskSettings />} />
+      <Route path="statistics" element={<StatisticsPage />} />
       {/* Future routes will go here */}
     </Routes>
   );

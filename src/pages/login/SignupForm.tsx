@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { signUp } from '../../lib/auth/authHelpers';
 import { getAllDepartments, Department } from '../../lib/firestore/departments';
+import Input from '../../components/ui/Input';
+import Button from '../../components/ui/Button';
 
 /**
  * Signup Form Component
@@ -29,6 +31,8 @@ const SignupForm: React.FC = () => {
   const [departmentInput, setDepartmentInput] = useState('');
   const [filteredDepartments, setFilteredDepartments] = useState<Department[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [roleOpen, setRoleOpen] = useState(false);
+  const roleDetailsRef = useRef<HTMLDetailsElement>(null);
   
   // Ref for dropdown to handle click outside
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -77,7 +81,7 @@ const SignupForm: React.FC = () => {
     };
   }, []);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
@@ -232,66 +236,39 @@ const SignupForm: React.FC = () => {
         {/* Name Fields Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* First Name */}
-          <div className="space-y-2">
-            <label htmlFor="firstName" className="block text-sm font-medium text-white/90">
-              שם פרטי
-            </label>
-            <input
-              type="text"
-              id="firstName"
-              name="firstName"
-              value={formData.firstName}
-              onChange={handleChange}
-              placeholder="הכנס שם פרטי"
-              required
-              className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            />
-          </div>
+          <Input label="שם פרטי" id="firstName" name="firstName" value={formData.firstName} onChange={handleChange} placeholder="הכנס שם פרטי" required />
 
           {/* Last Name */}
-          <div className="space-y-2">
-            <label htmlFor="lastName" className="block text-sm font-medium text-white/90">
-              שם משפחה
-            </label>
-            <input
-              type="text"
-              id="lastName"
-              name="lastName"
-              value={formData.lastName}
-              onChange={handleChange}
-              placeholder="הכנס שם משפחה"
-              required
-              className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            />
-          </div>
+          <Input label="שם משפחה" id="lastName" name="lastName" value={formData.lastName} onChange={handleChange} placeholder="הכנס שם משפחה" required />
         </div>
 
-        {/* Role Field */}
+        {/* Role Field - custom dropdown (owner/worker only) */}
         <div className="space-y-2">
-          <label htmlFor="role" className="block text-sm font-medium text-white/90">
-            תפקיד
-          </label>
-          <select
-            id="role"
-            name="role"
-            value={formData.role}
-            onChange={handleChange}
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-          >
-            <option value="" className="bg-gray-800 text-white">
-              בחר תפקיד
-            </option>
-            <option value="owner" className="bg-gray-800 text-white">
-              בעל/ת מחלקה
-            </option>
-            <option value="admin" className="bg-gray-800 text-white">
-              מנהל/ת
-            </option>
-            <option value="worker" className="bg-gray-800 text-white">
-              עובד/ת
-            </option>
-          </select>
+          <label className="block text-sm font-medium text-white/90">תפקיד</label>
+          <details ref={roleDetailsRef} open={roleOpen} className="group bg-white/10 border border-white/20 rounded-xl">
+            <summary
+              className="list-none px-4 py-3 text-white/90 cursor-pointer rounded-xl flex items-center justify-between"
+              onClick={(e) => { e.preventDefault(); setRoleOpen(v => !v); }}
+            >
+              <span>{formData.role === '' ? 'בחר תפקיד' : formData.role === 'owner' ? 'בעל/ת מחלקה' : 'עובד/ת'}</span>
+              <span className="text-white/70">▾</span>
+            </summary>
+            <div className="px-2 pb-2">
+              {[
+                { id: 'owner', label: 'בעל/ת מחלקה' },
+                { id: 'worker', label: 'עובד/ת' },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => { setFormData(prev => ({ ...prev, role: opt.id })); setRoleOpen(false); roleDetailsRef.current && (roleDetailsRef.current.open = false); }}
+                  className={`w-full text-right px-3 py-2 rounded-lg hover:bg-white/10 text-white ${formData.role === opt.id ? 'bg-white/10 border border-white/20' : 'border border-transparent'}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </details>
         </div>
 
         {/* Department Field */}
@@ -300,8 +277,7 @@ const SignupForm: React.FC = () => {
             מחלקה
           </label>
           
-          <input
-            type="text"
+          <Input
             id="departmentSearch"
             value={departmentInput}
             onChange={handleDepartmentInputChange}
@@ -309,7 +285,6 @@ const SignupForm: React.FC = () => {
             placeholder="הקלד שם מחלקה..."
             disabled={!formData.role}
             autoComplete="off"
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm disabled:opacity-50"
           />
           
           {/* Dropdown list with glassmorphism design */}
@@ -361,41 +336,10 @@ const SignupForm: React.FC = () => {
         </div>
 
         {/* Email Field */}
-        <div className="space-y-2">
-          <label htmlFor="email" className="block text-sm font-medium text-white/90">
-            כתובת אימייל
-          </label>
-          <input
-            type="email"
-            id="email"
-            name="email"
-            value={formData.email}
-            onChange={handleChange}
-            placeholder="הכנס כתובת אימייל"
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            dir="ltr"
-          />
-        </div>
+        <Input label="כתובת אימייל" id="email" name="email" type="email" value={formData.email} onChange={handleChange} placeholder="הכנס כתובת אימייל" dir="ltr" required />
 
         {/* Password Field */}
-        <div className="space-y-2">
-          <label htmlFor="password" className="block text-sm font-medium text-white/90">
-            סיסמה
-          </label>
-          <input
-            type="password"
-            id="password"
-            name="password"
-            value={formData.password}
-            onChange={handleChange}
-            placeholder="הכנס סיסמה (לפחות 8 תווים)"
-            required
-            minLength={8}
-            className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
-            dir="ltr"
-          />
-        </div>
+        <Input label="סיסמה" id="password" name="password" type="password" value={formData.password} onChange={handleChange} placeholder="הכנס סיסמה (לפחות 8 תווים)" required minLength={8} dir="ltr" />
 
         {/* Terms and Conditions */}
         <div className="flex items-start text-sm">
@@ -424,13 +368,9 @@ const SignupForm: React.FC = () => {
         </div>
 
         {/* Signup Button */}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-3 px-6 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold rounded-xl hover:from-purple-700 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-white/30 transition-all duration-300 transform hover:scale-[1.02] shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-        >
+        <Button type="submit" fullWidth blink={!loading && !!formData.role && !!departmentInput && !!formData.firstName && !!formData.lastName && !!formData.email && formData.password.length >= 8} disabled={loading}>
           {loading ? 'מתבצעת הרשמה...' : 'הירשם'}
-        </button>
+        </Button>
       </form>
 
     </div>

@@ -42,3 +42,17 @@
   }
 }
 
+/* Gentle blink/pulse to draw attention without being distracting */
+@keyframes gentleBlink {
+  0%, 100% { filter: brightness(1); box-shadow: 0 0 0 rgba(255,255,255,0); }
+  50% { filter: brightness(1.15); box-shadow: 0 10px 30px rgba(255,255,255,0.15); }
+}
+
+.blink-soft {
+  animation: gentleBlink 1.8s ease-in-out infinite;
+}
+
+.blink-soft-paused {
+  animation-play-state: paused;
+}
+

@@ -82,10 +82,10 @@ const AdminDash: React.FC = () => {
       color: 'from-rose-600 to-orange-600'
     },
     {
-      title: 'תוכניות שבועיות',
-      description: 'נהל תוכניות עבודה שבועיות',
+      title: 'תוכנית שבועית',
+      description: 'צפה בתוכנית משולבת וייצא קבצים',
       icon: '🗓️',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/admin/combined-schedule'),
       color: 'from-orange-600 to-amber-600'
     },
     {
@@ -99,7 +99,7 @@ const AdminDash: React.FC = () => {
       title: 'סטטיסטיקה',
       description: 'צפה בסטטיסטיקות ודוחות',
       icon: '📊',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/admin/statistics'),
       color: 'from-cyan-600 to-teal-600'
     },
     {

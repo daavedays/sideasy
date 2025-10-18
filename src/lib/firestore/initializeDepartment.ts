@@ -53,6 +53,30 @@ export async function initializeDepartmentCollections(
     );
     console.log(`✅ Ensured workers/index container for department ${departmentId}`);
     
+    // 2. Initialize department-level preferences configuration (merge-safe)
+    const departmentRef = doc(db, 'departments', departmentId);
+    await setDoc(
+      departmentRef,
+      {
+        // Worker preferences configuration
+        preferencesConfig: {
+          // null = unlimited per-week blocked tasks
+          maxBlockedTasksPerWeek: null,
+          // Weekly cutoff controlling submissions for the upcoming week
+          weeklyCutoff: {
+            enabled: false,
+            // Week starts on Sunday; default values are placeholders when disabled
+            dayOfWeek: 'thu', // 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat'
+            hour: 23,
+            minute: 59
+          }
+        },
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+    console.log(`✅ Initialized preferencesConfig for department ${departmentId}`);
+
     // Note: Schedules and other subcollections will be added later when those features are implemented
 
     return {

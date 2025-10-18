@@ -10,20 +10,22 @@
  * Location: src/pages/common/ManageWorkers.tsx
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
+import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
 import {
-  getAllWorkers,
   updateWorkerWithSync,
   changeWorkerRole,
   softDeleteWorker,
   WorkerData
 } from '../../lib/firestore/workers';
 import { getTaskDefinitions, type SecondaryTaskDefinition } from '../../lib/firestore/taskDefinitions';
+import Button from '../../components/ui/Button';
+import Input from '../../components/ui/Input';
 
 interface Props {
   backUrl: string;
@@ -47,6 +49,8 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
   // Search & Filter
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'owner' | 'admin' | 'worker'>('all');
+  const [roleFilterOpen, setRoleFilterOpen] = useState(false);
+  const roleFilterDetailsRef = useRef<HTMLDetailsElement>(null);
   
   // Editing
   const [editingWorkerId, setEditingWorkerId] = useState<string | null>(null);
@@ -58,6 +62,10 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
   // Closing Intervals
   const [customClosingInterval, setCustomClosingInterval] = useState<number | null>(null);
   const [showCustomIntervalInput, setShowCustomIntervalInput] = useState(false);
+  const [modalRoleOpen, setModalRoleOpen] = useState(false);
+  const modalRoleDetailsRef = useRef<HTMLDetailsElement>(null);
+  const [closingOpen, setClosingOpen] = useState(false);
+  const closingDetailsRef = useRef<HTMLDetailsElement>(null);
   
   // Changes tracking
   const [hasChanges, setHasChanges] = useState(false);
@@ -139,6 +147,59 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
 
     loadWorkersOnce();
   }, [departmentId, userRole]);
+
+  // Realtime updates for consolidated workers map (optional via toggle)
+  useEffect(() => {
+    if (!departmentId) return;
+    if (!REALTIME_LISTENERS_ENABLED) return;
+
+    const mapRef = doc(db, 'departments', departmentId, 'workers', 'index');
+    const unsubscribe = onSnapshot(mapRef, (mapSnap) => {
+      if (!mapSnap.exists()) return;
+
+      const data = mapSnap.data() as any;
+      const workersMap = (data.workers || {}) as Record<string, any>;
+      const workersData: WorkerData[] = [];
+
+      Object.values(workersMap).forEach((entry: any) => {
+        const normalized: WorkerData = {
+          workerId: entry.workerId,
+          firstName: entry.firstName,
+          lastName: entry.lastName,
+          email: entry.email,
+          unit: entry.unit || '',
+          role: entry.role,
+          isOfficer: !!entry.isOfficer,
+          activity: entry.activity,
+          qualifications: entry.qualifications || [],
+          closingInterval: entry.closingInterval ?? 0,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+        } as any;
+
+        if (userRole === 'admin' && normalized.role !== 'worker') return;
+        if (normalized.activity === 'deleted') return;
+        workersData.push(normalized);
+      });
+
+      workersData.sort((a, b) => {
+        const nameA = `${a.firstName} ${a.lastName}`.toLowerCase();
+        const nameB = `${b.firstName} ${b.lastName}`.toLowerCase();
+        return nameA.localeCompare(nameB, 'he');
+      });
+
+      setOriginalWorkers(workersData);
+      // Only overwrite current editable list if there are no local edits in progress
+      if (!hasChanges && !editingWorkerId) {
+        setWorkers(workersData);
+      }
+      setLoading(false);
+    }, (err) => {
+      console.error('Error listening to workers map:', err);
+    });
+
+    return () => unsubscribe();
+  }, [departmentId, userRole, hasChanges, editingWorkerId]);
 
   // Load task definitions for qualifications
   useEffect(() => {
@@ -526,8 +587,8 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
             </h1>
             <p className="text-white/80 mt-2">
               {userRole === 'owner' 
-                ? 'נהל את כל העובדים, מנהלים והבעלים במחלקה'
-                : 'נהל את הסמכות העובדים במחלקה'}
+                ? 'נהל את העובדים והגדר עבורם משימות שהם יכולים לבצע'
+                : 'הגדרת משימות שהעובד יכול לבצע'}
             </p>
           </div>
 
@@ -543,27 +604,15 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
           )}
 
           {/* Save/Discard Bar */}
-          {hasChanges && (
+            {hasChanges && (
             <div className="mb-6 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4">
               <div className="flex items-center justify-between flex-wrap gap-4">
                 <p className="text-white">
                   ⚠️ יש לך שינויים שלא נשמרו
                 </p>
                 <div className="flex gap-3">
-                  <button
-                    onClick={handleDiscard}
-                    disabled={saving}
-                    className="px-6 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
-                  >
-                    בטל שינויים
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
-                  >
-                    {saving ? 'שומר...' : 'שמור שינויים'}
-                  </button>
+                    <Button variant="secondary" onClick={handleDiscard} disabled={saving}>בטל שינויים</Button>
+                    <Button onClick={handleSave} disabled={saving} blink={!saving}> {saving ? 'שומר...' : 'שמור שינויים'} </Button>
                 </div>
               </div>
             </div>
@@ -574,34 +623,35 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Search */}
               <div>
-                <label className="block text-white mb-2 text-sm font-medium">
-                  חיפוש עובדים
-                </label>
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="חפש לפי שם או אימייל..."
-                  className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:border-white/40"
-                />
+                <label className="block text-white mb-2 text-sm font-medium">חיפוש עובדים</label>
+                <Input value={searchTerm} onChange={(e) => setSearchTerm((e.target as HTMLInputElement).value)} placeholder="חפש לפי שם או אימייל..." />
               </div>
 
               {/* Role Filter - Only for owner */}
               {userRole === 'owner' && (
                 <div>
-                  <label className="block text-white mb-2 text-sm font-medium">
-                    סינון לפי תפקיד
-                  </label>
-                  <select
-                    value={roleFilter}
-                    onChange={(e) => setRoleFilter(e.target.value as any)}
-                    className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-white/40"
-                  >
-                    <option value="all">הכל ({counts.all})</option>
-                    <option value="owner">בעלים ({counts.owners})</option>
-                    <option value="admin">מנהלים ({counts.admins})</option>
-                    <option value="worker">עובדים ({counts.workers})</option>
-                  </select>
+                  <label className="block text-white mb-2 text-sm font-medium">סינון לפי תפקיד</label>
+                  <details ref={roleFilterDetailsRef} open={roleFilterOpen} className="group bg-white/10 border border-white/20 rounded-xl">
+                    <summary className="list-none px-4 py-2 text-white/90 cursor-pointer rounded-xl flex items-center justify-between" onClick={(e) => { e.preventDefault(); setRoleFilterOpen(v => !v); }}>
+                      <span>
+                        {roleFilter === 'all' ? `הכל (${counts.all})` : roleFilter === 'owner' ? `בעלים (${counts.owners})` : roleFilter === 'admin' ? `מנהלים (${counts.admins})` : `עובדים (${counts.workers})`}
+                      </span>
+                      <span className="text-white/70">▾</span>
+                    </summary>
+                    <div className="px-2 pb-2">
+                      {[
+                        { id: 'all', label: `הכל (${counts.all})` },
+                        { id: 'owner', label: `בעלים (${counts.owners})` },
+                        { id: 'admin', label: `מנהלים (${counts.admins})` },
+                        { id: 'worker', label: `עובדים (${counts.workers})` },
+                      ].map((opt) => (
+                        <button key={opt.id} type="button" className={`w-full text-right px-3 py-2 rounded-lg hover:bg-white/10 text-white ${roleFilter === (opt.id as any) ? 'bg-white/10 border border-white/20' : 'border border-transparent'}`}
+                          onClick={() => { setRoleFilter(opt.id as any); setRoleFilterOpen(false); roleFilterDetailsRef.current && (roleFilterDetailsRef.current.open = false); }}>
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
                 </div>
               )}
             </div>
@@ -670,20 +720,9 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex gap-2 justify-center">
-                            <button
-                              onClick={() => handleEdit(worker)}
-                              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-                            >
-                              ערוך
-                            </button>
+                            <Button size="sm" onClick={() => handleEdit(worker)}>ערוך</Button>
                             {userRole === 'owner' && worker.role !== 'owner' && (
-                              <button
-                                onClick={() => handleDelete(worker)}
-                                disabled={saving}
-                                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                              >
-                                מחק
-                              </button>
+                              <Button size="sm" variant="secondary" className="bg-red-600/40 border-red-400/40 hover:bg-red-600/60" onClick={() => handleDelete(worker)} disabled={saving}>מחק</Button>
                             )}
                           </div>
                         </td>
@@ -702,7 +741,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-gray-900 rounded-2xl p-8 max-w-2xl w-full max-h-[90vh] overflow-y-auto border border-white/20">
             <h2 className="text-3xl font-bold text-white mb-6">
-              ערוך עובד
+              {editingWorker.firstName} {editingWorker.lastName}
             </h2>
 
             <div className="space-y-6">
@@ -755,14 +794,26 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                       <label className="block text-white mb-2 text-sm font-medium">
                         תפקיד
                       </label>
-                      <select
-                        value={editingWorker.role}
-                        onChange={(e) => handleUpdateField('role', e.target.value)}
-                        className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-white/40"
-                      >
-                        <option value="admin">מנהל/ת</option>
-                        <option value="worker">עובד/ת</option>
-                      </select>
+                      <details ref={modalRoleDetailsRef} open={modalRoleOpen} className="group bg-white/10 border border-white/20 rounded-xl">
+                        <summary
+                          className="list-none px-4 py-2 text-white/90 cursor-pointer rounded-xl flex items-center justify-between"
+                          onClick={(e) => { e.preventDefault(); setModalRoleOpen(v => !v); }}
+                        >
+                          <span>{editingWorker.role === 'admin' ? 'מנהל/ת' : 'עובד/ת'}</span>
+                          <span className="text-white/70">▾</span>
+                        </summary>
+                        <div className="px-2 pb-2">
+                          {[
+                            { id: 'admin', label: 'מנהל/ת' },
+                            { id: 'worker', label: 'עובד/ת' },
+                          ].map((opt) => (
+                            <button key={opt.id} type="button" className={`w-full text-right px-3 py-2 rounded-lg hover:bg-white/10 text-white ${editingWorker.role === opt.id ? 'bg-white/10 border border-white/20' : 'border border-transparent'}`}
+                              onClick={() => { handleUpdateField('role', opt.id); setModalRoleOpen(false); if (modalRoleDetailsRef.current) modalRoleDetailsRef.current.open = false; }}>
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </details>
                       <p className="text-white/60 text-xs mt-1">
                         שינוי תפקיד ישפיע על הרשאות המשתמש בדשבורד
                       </p>
@@ -790,7 +841,7 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
               {/* Qualifications - Both roles */}
               <div>
                 <label className="block text-white mb-3 text-sm font-medium">
-                  הסמכות
+                  עבודות
                 </label>
                 {taskDefinitions.length === 0 ? (
                   <p className="text-white/60 text-sm">
@@ -846,20 +897,32 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
                 <label className="block text-white mb-2 text-sm font-medium">
                   אינטרוולי סגירות
                 </label>
-                <select
-                  value={showCustomIntervalInput ? 'custom' : String((editingWorker.closingInterval ?? 0))}
-                  onChange={(e) => handleClosingIntervalChange(e.target.value)}
-                  className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-white/40"
-                >
-                  <option value="0">ללא סגירות</option>
-                  <option value="2">חצאים</option>
-                  <option value="3">שלישים</option>
-                  <option value="4">רבעים</option>
-                  <option value="5">אחד לחמש</option>
-                  <option value="6">אחד לשש</option>
-                  <option value="8">אחד לשמונה</option>
-                  <option value="custom">אחר</option>
-                </select>
+                <details ref={closingDetailsRef} open={closingOpen} className="group bg-white/10 border border-white/20 rounded-xl">
+                  <summary
+                    className="list-none px-4 py-2 text-white/90 cursor-pointer rounded-xl flex items-center justify-between"
+                    onClick={(e) => { e.preventDefault(); setClosingOpen(v => !v); }}
+                  >
+                    <span>{showCustomIntervalInput ? 'אחר' : getClosingIntervalLabel(editingWorker.closingInterval ?? 0)}</span>
+                    <span className="text-white/70">▾</span>
+                  </summary>
+                  <div className="px-2 pb-2">
+                    {[
+                      { id: '0', label: 'ללא סגירות' },
+                      { id: '2', label: 'חצאים' },
+                      { id: '3', label: 'שלישים' },
+                      { id: '4', label: 'רבעים' },
+                      { id: '5', label: 'אחד לחמש' },
+                      { id: '6', label: 'אחד לשש' },
+                      { id: '8', label: 'אחד לשמונה' },
+                      { id: 'custom', label: 'אחר' },
+                    ].map((opt) => (
+                      <button key={opt.id} type="button" className={`w-full text-right px-3 py-2 rounded-lg hover:bg-white/10 text-white ${(!showCustomIntervalInput && String(editingWorker.closingInterval ?? 0) === opt.id) || (showCustomIntervalInput && opt.id === 'custom') ? 'bg-white/10 border border-white/20' : 'border border-transparent'}`}
+                        onClick={() => { handleClosingIntervalChange(opt.id); setClosingOpen(false); if (closingDetailsRef.current) closingDetailsRef.current.open = false; }}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </details>
                 
                 {/* Custom interval input */}
                 {showCustomIntervalInput && (
@@ -889,18 +952,8 @@ const ManageWorkers: React.FC<Props> = ({ backUrl, userRole }) => {
 
             {/* Modal Actions */}
             <div className="flex gap-3 mt-8 pt-6 border-t border-white/20">
-              <button
-                onClick={handleSaveEdit}
-                className="flex-1 px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
-              >
-                ✓ שמור שינויים
-              </button>
-              <button
-                onClick={handleCancelEdit}
-                className="flex-1 px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-lg font-medium transition-colors"
-              >
-                ✕ ביטול
-              </button>
+              <Button fullWidth onClick={handleSaveEdit}>✓ שמור שינויים</Button>
+              <Button fullWidth variant="secondary" onClick={handleCancelEdit}>✕ ביטול</Button>
             </div>
           </div>
         </div>

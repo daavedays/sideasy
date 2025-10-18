@@ -29,13 +29,12 @@ import {
 import { calculateWeeksFromDateRange, sortWorkersAlphabetically, getYear } from '../../lib/utils/weekUtils';
 import { generateCellKey } from '../../lib/utils/cellKeyUtils';
 import { exportScheduleToCSV } from '../../lib/utils/csvExport';
-import { WorkerData } from '../../lib/firestore/workers';
+// import { WorkerData } from '../../lib/firestore/workers';
 import { getTaskDefinitions } from '../../lib/firestore/taskDefinitions';
 import {
   saveScheduleWithWorkerUpdates,
   getScheduleById,
   getScheduleAssignments,
-  deleteSchedule,
 } from '../../lib/firestore/primarySchedules';
 
 interface LocationState {
@@ -74,7 +73,9 @@ const PrimaryTasksTableView: React.FC = () => {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  // const [isDeleting, setIsDeleting] = useState(false);
+  const [, setIsHydratedFromCache] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -128,18 +129,49 @@ const PrimaryTasksTableView: React.FC = () => {
       if (!scheduleId || !departmentId) return;
 
       try {
-        // Load schedule metadata (for validation)
-        const schedule = await getScheduleById(departmentId, scheduleId);
-        if (!schedule) {
-          console.error('Schedule not found');
-          return;
+        // Try local cache first (avoid immediate re-read after a recent save)
+        const cacheKey = `primarySchedule:${departmentId}:${scheduleId}`;
+        const raw = localStorage.getItem(cacheKey);
+        let loadedFromCache = false;
+        if (raw) {
+          try {
+            const cached = JSON.parse(raw);
+            const ttlMs = 5 * 60 * 1000; // 5 minutes TTL
+            const ts = cached?.savedAt ? new Date(cached.savedAt).getTime() : 0;
+            if (ts && (Date.now() - ts) < ttlMs && Array.isArray(cached.assignments)) {
+              const map = new Map<string, Assignment>();
+              (cached.assignments as Array<{ key: string; value: any }>).forEach((kv) => {
+                const a = kv.value as any;
+                map.set(kv.key, {
+                  ...a,
+                  startDate: new Date(a.startDate),
+                  endDate: new Date(a.endDate),
+                } as Assignment);
+              });
+              setAssignments(map);
+              setOriginalAssignments(new Map(map));
+              setIsHydratedFromCache(true);
+              loadedFromCache = true;
+              console.log(`[Cache] Hydrated schedule ${scheduleId} from localStorage (${map.size} assignments)`);
+            }
+          } catch {}
         }
 
-        // Load assignments
-        const loadedAssignments = await getScheduleAssignments(departmentId, scheduleId);
-        setAssignments(loadedAssignments);
-        setOriginalAssignments(new Map(loadedAssignments)); // Deep copy for comparison
-        console.log(`Loaded ${loadedAssignments.size} assignments from existing schedule`);
+        if (!loadedFromCache) {
+          // Load schedule metadata (for validation)
+          const schedule = await getScheduleById(departmentId, scheduleId);
+          if (!schedule) {
+            console.error('Schedule not found');
+            return;
+          }
+
+          // Load assignments from Firestore
+          const loadedAssignments = await getScheduleAssignments(departmentId, scheduleId);
+          setAssignments(loadedAssignments);
+          setOriginalAssignments(new Map(loadedAssignments)); // Deep copy for comparison
+          setIsHydratedFromCache(false);
+          console.log(`Loaded ${loadedAssignments.size} assignments from existing schedule`);
+        }
       } catch (error) {
         console.error('Error loading existing schedule:', error);
         alert('שגיאה בטעינת תורנות קיימת');
@@ -148,6 +180,24 @@ const PrimaryTasksTableView: React.FC = () => {
 
     loadExistingSchedule();
   }, [scheduleId, departmentId]);
+
+  // Force refresh from Firestore ignoring cache
+  const handleRefreshFromFirestore = async () => {
+    if (!scheduleId || !departmentId) return;
+    try {
+      setIsRefreshing(true);
+      // Clear cache snapshot
+      try { localStorage.removeItem(`primarySchedule:${departmentId}:${scheduleId}`); } catch {}
+      const loadedAssignments = await getScheduleAssignments(departmentId, scheduleId);
+      setAssignments(loadedAssignments);
+      setOriginalAssignments(new Map(loadedAssignments));
+    } catch (e) {
+      console.error('שגיאה ברענון הנתונים', e);
+      alert('שגיאה ברענון הנתונים');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // Load workers and admins from consolidated map doc (single read)
   useEffect(() => {
@@ -227,9 +277,9 @@ const PrimaryTasksTableView: React.FC = () => {
         // setQualificationNameById(nameMap); // This line is no longer needed as qualificationNameById is removed
 
         // Build options directly from secondary definitions (stable ordering by name)
-        const secDefs = (taskDefs?.secondary_tasks?.definitions || []) as Array<{ id: string; name: string }>
-        const opts = secDefs.map((d) => ({ id: String(d.id), name: String(d.name) }))
-          .sort((a, b) => a.name.localeCompare(b.name, 'he'));
+        // const secDefs = (taskDefs?.secondary_tasks?.definitions || []) as Array<{ id: string; name: string }>
+        /* const opts = (taskDefs?.secondary_tasks?.definitions || []).map((d: any) => ({ id: String(d.id), name: String(d.name) }))
+          .sort((a, b) => a.name.localeCompare(b.name, 'he')); */
         // setAllQualifications(opts); // This line is no longer needed as allQualifications is removed
       } catch (error) {
         console.error('Error loading task definitions:', error);
@@ -383,6 +433,17 @@ const PrimaryTasksTableView: React.FC = () => {
       setOriginalAssignments(new Map(assignments)); // Update baseline
       setHasUnsavedChanges(false);
 
+      // Save a local cache snapshot for quick revisit within short time window
+      try {
+        const cacheKey = `primarySchedule:${departmentId}:${savedScheduleId}`;
+        const arr: Array<{ key: string; value: any }> = [];
+        assignments.forEach((val, key) => {
+          arr.push({ key, value: { ...val, startDate: val.startDate.toISOString(), endDate: val.endDate.toISOString() } });
+        });
+        localStorage.setItem(cacheKey, JSON.stringify({ savedAt: new Date().toISOString(), assignments: arr }));
+        console.log(`[Cache] Saved schedule ${savedScheduleId} snapshot (${arr.length} assignments)`);
+      } catch {}
+
       console.log(`✅ [handleSaveSchedule] Schedule ID persisted: ${savedScheduleId}`);
       console.log(`✅ [handleSaveSchedule] Future saves will UPDATE this schedule, not create new ones`);
 
@@ -398,7 +459,7 @@ const PrimaryTasksTableView: React.FC = () => {
   };
 
   // Handle delete schedule
-  const handleDeleteSchedule = async () => {
+  /* const handleDeleteSchedule = async () => {
     if (!departmentId || !scheduleId) return;
 
     const confirmed = window.confirm('האם אתה בטוח שברצונך למחוק את התורנות? פעולה זו בלתי הפיכה.');
@@ -416,7 +477,7 @@ const PrimaryTasksTableView: React.FC = () => {
     } finally {
       setIsDeleting(false);
     }
-  };
+  }; */
 
   // Handle export to CSV
   const handleExportCSV = () => {
@@ -489,6 +550,14 @@ const PrimaryTasksTableView: React.FC = () => {
                   className="px-4"
                 >
                   🧹 נקה טבלה
+                </Button>
+                <Button
+                  onClick={handleRefreshFromFirestore}
+                  disabled={isSaving || isRefreshing || !scheduleId}
+                  variant="secondary"
+                  className="px-6"
+                >
+                  {isRefreshing ? '⏳ מרענן…' : '🔄 רענן נתונים'}
                 </Button>
                 <Button
                   onClick={handleExportCSV}

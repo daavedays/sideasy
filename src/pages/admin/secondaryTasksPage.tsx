@@ -4,12 +4,14 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Timestamp, collection, doc, getDoc, getDocs, setDoc, orderBy, query, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../../config/firebase';
 import Background from '../../components/layout/Background';
 import Header from '../../components/layout/Header';
 import HebrewDatePicker from '../../components/ui/HebrewDatePicker';
 import Button from '../../components/ui/Button';
+import SaveProgress from '../../components/ui/SaveProgress';
 import Input from '../../components/ui/Input';
 import Modal from '../../components/ui/Modal';
 import SecondaryTaskTable, { SecondaryTask, CellData, WorkerInCell, getCellKey } from '../../components/shared/SecondaryTaskTable';
@@ -17,361 +19,11 @@ import { getTaskDefinitions } from '../../lib/firestore/taskDefinitions';
 import { ClosingScheduleCalculator } from '../../lib/utils/closingScheduleCalculator';
 import { generateSecondarySchedule } from '../../lib/utils/secondaryScheduleEngine';
 import { formatDateDDMMYYYY } from '../../lib/utils/dateUtils';
+import { updateSummaryForSecondarySave } from '../../lib/firestore/statistics';
 
-/**
- * Secondary schedule engine (local storage edition)
- * Reads payload from localStorage (key: `secondaryPlanning:{departmentId}`) and builds a full plan.
- * Returns assignments and diagnostics without writing to Firestore.
- */
-// Types below are kept for historical context; the active engine is imported.
-// type PreferenceEntry = { date: string; taskId: string | null; status?: 'preferred' | 'blocked' };
-// type WorkerProfile = { firstName: string; lastName: string; closingInterval: number; qualifications: string[] };
-// type WorkerPayload = { profile: WorkerProfile; primaryTasks: Array<{ taskId: string; taskName: string; startDate: string; endDate: string; scheduleId: string }>; mandatoryClosingDates: string[]; optimalClosingDates: string[]; preferencesInWindow: PreferenceEntry[] };
-// type PlanningPayload = { generatedAt: string; departmentId: string; selectedRange: { start: string; end: string }; window: { start: string; end: string }; fridays: string[]; schedulesUsed: string[]; workers: Record<string, WorkerPayload> };
-// type GenerateOptions = { weeklyCapSequence?: number[]; scarcityThreshold?: number; skipManualOnlyTasks?: boolean };
-// type WeekendCloserDecision = { workerId: string; reason: 'missed_optimal' | 'on_optimal' | 'due' | 'fairness' };
-// type Assignment = { date: string; taskId: string; workerId: string };
-// type PlanResult = { closersByFriday: Record<string, { forced: string[]; assigned: WeekendCloserDecision[]; requiredCount: number }>; assignments: Assignment[]; warnings: string[]; logs: string[] };
-
-// Engine moved to src/lib/utils/secondaryScheduleEngine.ts; the in-file version below is commented out.
-/*
-function generateSecondarySchedule(
-  departmentId: string,
-  start: Date,
-  end: Date,
-  tasks: SecondaryTask[],
-  opts: GenerateOptions = {}
-): PlanResult {
-  // Helpers (scoped)
-  const parseDDMM = (s: string): Date => {
-    const [d, m, y] = s.split('/').map(Number);
-    return new Date(y, m - 1, d, 12, 0, 0, 0);
-  };
-  const fmtDDMM = (d: Date): string => {
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const yy = d.getFullYear();
-    return `${dd}/${mm}/${yy}`;
-  };
-  const addDaysLocal = (d: Date, days: number): Date => {
-    const x = new Date(d);
-    x.setDate(x.getDate() + days);
-    return x;
-  };
-  const isThuFriSat = (d: Date) => {
-    const dow = d.getDay();
-    return dow === 4 || dow === 5 || dow === 6;
-  };
-  const isFriday = (d: Date) => d.getDay() === 5;
-  const dateKey = (d: Date) => fmtDDMM(d);
-  const hasPrimaryOn = (worker: WorkerPayload, day: Date): boolean => {
-    const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0, 0);
-    const dayEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 59, 59, 999);
-    return (worker.primaryTasks || []).some((t) => {
-      const s = new Date(t.startDate);
-      const e = new Date(t.endDate);
-      return !(e < dayStart || s > dayEnd);
-    });
-  };
-  const spansWeekend = (worker: WorkerPayload, friday: Date): boolean => {
-    const thu = addDaysLocal(friday, -1);
-    const sat = addDaysLocal(friday, +1);
-    return (worker.primaryTasks || []).some((t) => {
-      const s = new Date(t.startDate);
-      const e = new Date(t.endDate);
-      return !(e < thu || s > sat);
-    });
-  };
-  const previousFriday = (friday: Date): Date => addDaysLocal(friday, -7);
-  const weeksSinceLastClose = (
-    workerId: string,
-    friday: Date,
-    assignedClosers: Record<string, Set<string>>,
-    payload: PlanningPayload
-  ): number => {
-    let last: Date | null = null;
-    const fridays = payload.fridays.map(parseDDMM).sort((a, b) => a.getTime() - b.getTime());
-    for (let i = fridays.length - 1; i >= 0; i--) {
-      const f = fridays[i];
-      if (f >= friday) continue;
-      const k = dateKey(f);
-      if (assignedClosers[k]?.has(workerId)) { last = f; break; }
-    }
-    if (!last) {
-      const mandatory = payload.workers[workerId]?.mandatoryClosingDates || [];
-      const prevs = mandatory.map(parseDDMM).filter((d) => d < friday);
-      if (prevs.length > 0) last = prevs.sort((a, b) => a.getTime() - b.getTime())[prevs.length - 1];
-    }
-    if (!last) return 9999;
-    const diffDays = Math.floor((friday.getTime() - last.getTime()) / (24 * 60 * 60 * 1000));
-    return Math.floor(diffDays / 7);
-  };
-  const missedOptimal = (
-    worker: WorkerPayload,
-    workerId: string,
-    friday: Date,
-    assignedClosers: Record<string, Set<string>>,
-    payload: PlanningPayload
-  ): { missed: boolean; prevOptimal?: Date } => {
-    const prevOpts = (worker.optimalClosingDates || [])
-      .map(parseDDMM)
-      .filter((d) => d < friday)
-      .sort((a, b) => a.getTime() - b.getTime());
-    if (prevOpts.length === 0) return { missed: false };
-    const prev = prevOpts[prevOpts.length - 1];
-    const wsl = weeksSinceLastClose(workerId, friday, assignedClosers, payload);
-    const weeksSincePrev = Math.floor((friday.getTime() - prev.getTime()) / (7 * 24 * 60 * 60 * 1000));
-    const missed = wsl > weeksSincePrev;
-    return { missed, prevOptimal: prev };
-  };
-  const isQualified = (task: SecondaryTask, worker: WorkerPayload): boolean => {
-    if (!task.requiresQualification) return true;
-    const quals = worker.profile.qualifications || [];
-    return quals.includes(task.id);
-  };
-  const preferenceOn = (worker: WorkerPayload, day: Date, taskId: string) => {
-    const key = dateKey(day);
-    const prefs = worker.preferencesInWindow || [];
-    const sameDay = prefs.filter((p) => p.date === key);
-    const blocked = sameDay.some((p) => p.status === 'blocked');
-    const preferred = sameDay.some((p) => p.status === 'preferred' && (p.taskId === null || p.taskId === taskId));
-    return { blocked, preferred };
-  };
-
-  const options: Required<GenerateOptions> = {
-    weeklyCapSequence: opts.weeklyCapSequence || [0, 1, 2, 3],
-    scarcityThreshold: opts.scarcityThreshold ?? 3,
-    skipManualOnlyTasks: opts.skipManualOnlyTasks ?? true,
-  };
-
-  // 1) Load payload
-  const key = `secondaryPlanning:${departmentId}`;
-  const raw = localStorage.getItem(key);
-  if (!raw) throw new Error(`Local payload not found for ${key}`);
-  const payload: PlanningPayload = JSON.parse(raw);
-
-  // 2) Build dates for selected range
-  const dates: Date[] = [];
-  {
-    const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 12, 0, 0, 0);
-    const endD = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 12, 0, 0, 0);
-    while (cur <= endD) { dates.push(new Date(cur)); cur.setDate(cur.getDate() + 1); }
-  }
-
-  // 3) Scarcity per task
-  const qualifiedCountByTask: Record<string, number> = {};
-  Object.keys(payload.workers).forEach((wid) => {
-    const worker = payload.workers[wid];
-    tasks.forEach((t) => { if (isQualified(t, worker)) qualifiedCountByTask[t.id] = (qualifiedCountByTask[t.id] || 0) + 1; });
-  });
-
-  // 4) Weekend closers plan
-  const closersByFriday: PlanResult['closersByFriday'] = {};
-  const assignedClosers: Record<string, Set<string>> = {};
-  const fridaysInRange = dates.filter(isFriday);
-  for (const friday of fridaysInRange) {
-    const fKey = dateKey(friday);
-    const forced = Object.keys(payload.workers).filter((wid) => payload.workers[wid].mandatoryClosingDates?.includes(fKey));
-    const required = tasks.filter((t) => t.assign_weekends && t.autoAssign).length;
-    const candidates: Array<{ wid: string; missed: boolean; onOptimal: boolean; weeksUntilDue: number }> = [];
-    for (const wid of Object.keys(payload.workers)) {
-      if (forced.includes(wid)) continue;
-      const wp = payload.workers[wid];
-      if (wp.profile.closingInterval === 0) continue;
-      if (spansWeekend(wp, friday)) continue;
-      const prevF = previousFriday(friday);
-      const prevKey = dateKey(prevF);
-      const closedPrevious = assignedClosers[prevKey]?.has(wid) || (wp.mandatoryClosingDates || []).includes(prevKey);
-      if (closedPrevious) continue;
-      const isOnOptimal = (wp.optimalClosingDates || []).includes(fKey);
-      const { missed } = missedOptimal(wp, wid, friday, assignedClosers, payload);
-      const weeksSince = weeksSinceLastClose(wid, friday, assignedClosers, payload);
-      const weeksUntilDue = Math.max(0, (wp.profile.closingInterval || 0) - weeksSince);
-      candidates.push({ wid, missed, onOptimal: isOnOptimal, weeksUntilDue });
-    }
-    candidates.sort((a, b) => {
-      if (a.missed !== b.missed) return a.missed ? -1 : 1;
-      if (a.onOptimal !== b.onOptimal) return a.onOptimal ? -1 : 1;
-      if (a.weeksUntilDue !== b.weeksUntilDue) return a.weeksUntilDue - b.weeksUntilDue;
-      return a.wid.localeCompare(b.wid);
-    });
-    const need = Math.max(0, required - forced.length);
-    const chosen: WeekendCloserDecision[] = [];
-    for (const c of candidates) {
-      if (chosen.length >= need) break;
-      const reason = c.missed ? 'missed_optimal' : c.onOptimal ? 'on_optimal' : c.weeksUntilDue === 0 ? 'due' : 'fairness';
-      chosen.push({ workerId: c.wid, reason });
-      (assignedClosers[fKey] = assignedClosers[fKey] || new Set()).add(c.wid);
-    }
-    closersByFriday[fKey] = { forced, assigned: chosen, requiredCount: required };
-  }
-
-  // 5) Assign secondary tasks across days (weekday + weekend)
-  const assignments: Assignment[] = [];
-  const yCountTotal: Record<string, number> = {};
-  const yCountWeek: Record<string, Record<string, number>> = {};
-  const assignedOnDay: Record<string, Set<string>> = {};
-  const assignedCellByDayTask: Record<string, Set<string>> = {};
-  const logs: string[] = [];
-  const warnings: string[] = [];
-  const getWeekKey = (d: Date): string => {
-    const y = d.getFullYear();
-    const firstDay = new Date(y, 0, 1);
-    const days = Math.floor((d.getTime() - firstDay.getTime()) / (24 * 60 * 60 * 1000));
-    const week = Math.floor((days + firstDay.getDay()) / 7);
-    return `${y}-${week}`;
-  };
-  const tasksAuto = tasks.filter((t) => options.skipManualOnlyTasks ? t.autoAssign : true);
-  const sortedTasksByScarcity = [...tasksAuto].sort((a, b) => {
-    const qa = qualifiedCountByTask[a.id] ?? 0;
-    const qb = qualifiedCountByTask[b.id] ?? 0;
-    return qa - qb;
-  });
-
-  // 5a) Weekend triads: assign the same worker for Thu+Fri+Sat per task
-  for (const friday of fridaysInRange) {
-    const fKey = dateKey(friday);
-    const weekendTasks = sortedTasksByScarcity.filter((t) => t.assign_weekends);
-    if (weekendTasks.length === 0) continue;
-
-    const thu = addDaysLocal(friday, -1);
-    const sat = addDaysLocal(friday, +1);
-    [thu, friday, sat].forEach((d) => {
-      const dk = dateKey(d);
-      assignedOnDay[dk] = assignedOnDay[dk] || new Set<string>();
-      assignedCellByDayTask[dk] = assignedCellByDayTask[dk] || new Set<string>();
-    });
-
-    const forced = closersByFriday[fKey]?.forced || [];
-
-    for (const task of weekendTasks) {
-      let chosenWid: string | null = null;
-      for (const cap of options.weeklyCapSequence) {
-        let best: { wid: string; score: number } | null = null;
-        for (const wid of Object.keys(payload.workers)) {
-          const worker = payload.workers[wid];
-          if (!isQualified(task, worker)) continue;
-          if (spansWeekend(worker, friday)) continue; // primary across weekend
-          if (forced.includes(wid)) continue; // do not give Y to forced closer
-
-          const dkThu = dateKey(thu); const dkFri = fKey; const dkSat = dateKey(sat);
-          if (assignedOnDay[dkThu]?.has(wid) || assignedOnDay[dkFri]?.has(wid) || assignedOnDay[dkSat]?.has(wid)) continue;
-
-          const wk = getWeekKey(friday);
-          const cnt = (yCountWeek[wid]?.[wk] || 0);
-          if (cnt > cap) continue;
-
-          const prefFri = preferenceOn(worker, friday, task.id);
-          const scarcity = qualifiedCountByTask[task.id] ?? 0;
-          const scarcityBonus = Math.max(0, (options.scarcityThreshold + 1) - scarcity);
-          const totalCnt = (yCountTotal[wid] || 0);
-          let s = 0;
-          if (prefFri.preferred) s += 2;
-          s += scarcityBonus;
-          s += (cap - cnt);
-          s += (5 - Math.min(5, totalCnt));
-
-          if (!best || s > best.score || (s === best.score && wid.localeCompare((best as any).wid) < 0)) {
-            best = { wid, score: s } as any;
-          }
-        }
-        if (best) { chosenWid = best.wid; break; }
-      }
-
-      if (!chosenWid) {
-        warnings.push(`Weekend ${fKey}: no candidate for task ${task.id}`);
-        continue;
-      }
-
-      const triadDays = [thu, friday, sat].filter((d) => d >= dates[0] && d <= dates[dates.length - 1]);
-      for (const d of triadDays) {
-        const dk = dateKey(d);
-        assignments.push({ date: dk, taskId: task.id, workerId: chosenWid });
-        assignedOnDay[dk].add(chosenWid);
-        assignedCellByDayTask[dk].add(task.id);
-        const wkKey = getWeekKey(d);
-        (yCountWeek[chosenWid] = yCountWeek[chosenWid] || {})[wkKey] = (yCountWeek[chosenWid][wkKey] || 0) + 1;
-        yCountTotal[chosenWid] = (yCountTotal[chosenWid] || 0) + 1;
-      }
-    }
-  }
-  for (const day of dates) {
-    const keyDay = dateKey(day);
-    assignedOnDay[keyDay] = assignedOnDay[keyDay] || new Set();
-    assignedCellByDayTask[keyDay] = assignedCellByDayTask[keyDay] || new Set();
-    const fridayForWeekend = isThuFriSat(day) ? (() => {
-      const dow = day.getDay();
-      if (dow === 4) return addDaysLocal(day, +1);
-      if (dow === 5) return day;
-      return addDaysLocal(day, -1);
-    })() : null;
-    const fridayKey = fridayForWeekend ? dateKey(fridayForWeekend) : null;
-    const forced = fridayKey ? closersByFriday[fridayKey!]?.forced || [] : [];
-    for (const cap of options.weeklyCapSequence) {
-      for (const task of sortedTasksByScarcity) {
-        if (isThuFriSat(day)) {
-          if (!task.assign_weekends) continue;
-          if (assignedCellByDayTask[keyDay]?.has(task.id)) continue; // already filled by triad
-        } else {
-          if (task.assign_weekends) continue; // weekend-only tasks not on weekdays
-        }
-        let best: { wid: string; score: number } | null = null;
-        for (const wid of Object.keys(payload.workers)) {
-          const worker = payload.workers[wid];
-          if (!isQualified(task, worker)) continue;
-          if (hasPrimaryOn(worker, day)) continue;
-          if (assignedOnDay[keyDay].has(wid)) continue;
-          if (fridayKey && forced.includes(wid)) continue;
-          if (fridayKey && spansWeekend(worker, fridayForWeekend!)) continue;
-          const wk = getWeekKey(day);
-          const countWeek = (yCountWeek[wid]?.[wk] || 0);
-          if (countWeek > cap) continue;
-          const pref = preferenceOn(worker, day, task.id);
-          if (pref.blocked) continue;
-          const scarcity = qualifiedCountByTask[task.id] ?? 0;
-          const scarcityBonus = Math.max(0, (options.scarcityThreshold + 1) - scarcity);
-          const weeklyCnt = (yCountWeek[wid]?.[wk] || 0);
-          const totalCnt = (yCountTotal[wid] || 0);
-          let s = 0;
-          if (pref.preferred) s += 2;
-          s += scarcityBonus;
-          s += (cap - weeklyCnt);
-          s += (5 - Math.min(5, totalCnt));
-          if (!best || s > best.score || (s === best.score && wid.localeCompare((best as any).wid) < 0)) {
-            best = { wid, score: s } as any;
-          }
-        }
-        if (best) {
-          assignments.push({ date: keyDay, taskId: task.id, workerId: best.wid });
-          assignedOnDay[keyDay].add(best.wid);
-          yCountTotal[best.wid] = (yCountTotal[best.wid] || 0) + 1;
-          const wkKey = getWeekKey(day);
-          (yCountWeek[best.wid] = yCountWeek[best.wid] || {})[wkKey] = (yCountWeek[best.wid][wkKey] || 0) + 1;
-        }
-      }
-    }
-  }
-
-  // 6) Diagnostics
-  Object.keys(closersByFriday).forEach((fk) => {
-    const info = closersByFriday[fk];
-    if (info.assigned.length + info.forced.length < info.requiredCount) {
-      warnings.push(`Friday ${fk}: shortfall ${info.requiredCount - (info.assigned.length + info.forced.length)} (forced=${info.forced.length}, assigned=${info.assigned.length})`);
-    }
-  });
-  for (const a of assignments) {
-    const worker = payload.workers[a.workerId];
-    const d = parseDDMM(a.date);
-    if (hasPrimaryOn(worker, d)) warnings.push(`Primary overlap on ${a.date} for worker ${a.workerId}`);
-    const pref = preferenceOn(worker, d, a.taskId);
-    if (pref.blocked) warnings.push(`Blocked preference used on ${a.date} for worker ${a.workerId}`);
-  }
-  logs.push(`Generated ${assignments.length} secondary assignments.`);
-  return { closersByFriday, assignments, warnings, logs };
-}
-*/
 
 const AdminSecondaryTasksPage: React.FC = () => {
+  const location = useLocation();
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [departmentId, setDepartmentId] = useState<string>('');
@@ -383,6 +35,8 @@ const AdminSecondaryTasksPage: React.FC = () => {
   const [assignedByDate, setAssignedByDate] = useState<Record<string, Set<string>>>({});
   const [currentSecondaryScheduleId, setCurrentSecondaryScheduleId] = useState<string | null>(null);
   const [pastSchedules, setPastSchedules] = useState<Array<{ id: string; startDate: Date; endDate: Date; updatedAt: Date }>>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState<{ phase: 'idle'|'writingSchedule'|'updatingLedgers'|'updatingStats'|'done'; processed: number; total: number }>({ phase: 'idle', processed: 0, total: 0 });
 
   // Selection modal state
   const [selectionOpen, setSelectionOpen] = useState(false);
@@ -412,6 +66,51 @@ const AdminSecondaryTasksPage: React.FC = () => {
     };
     fetchDept();
   }, []);
+
+  // Prefill from query params: ?start=YYYY-MM-DD&end=YYYY-MM-DD&autoload=1
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const params = new URLSearchParams(location.search);
+        const s = params.get('start');
+        const e = params.get('end');
+        const autoload = params.get('autoload');
+        if (s) setStartDate(s);
+        if (e) setEndDate(e);
+        if (autoload === '1' && s && e && departmentId) {
+          const [sy, sm, sd] = s.split('-').map(Number);
+          const [ey, em, ed] = e.split('-').map(Number);
+          const rangeStart = new Date(sy, sm - 1, sd);
+          const rangeEnd = new Date(ey, em - 1, ed);
+          // Find most recent overlapping secondary schedule and load it
+          try {
+            const colRef = collection(db, 'departments', departmentId, 'secondarySchedules');
+            const snap = await getDocs(colRef);
+            let best: { id: string; updatedAt: Date } | null = null;
+            snap.forEach((d) => {
+              const data = d.data() as any;
+              const sdTs = (data.startDate as Timestamp | undefined)?.toDate();
+              const edTs = (data.endDate as Timestamp | undefined)?.toDate();
+              if (!sdTs || !edTs) return;
+              const overlap = (
+                (rangeStart >= sdTs && rangeStart <= edTs) ||
+                (rangeEnd >= sdTs && rangeEnd <= edTs) ||
+                (rangeStart <= sdTs && rangeEnd >= edTs)
+              );
+              if (!overlap) return;
+              const up = (data.updatedAt as Timestamp | undefined)?.toDate() || new Date(0);
+              if (!best || up > best.updatedAt) best = { id: d.id, updatedAt: up };
+            });
+            if (best) {
+              const selectedId = (best as { id: string; updatedAt: Date }).id;
+              await handleSelectPastSchedule(selectedId);
+            }
+          } catch {}
+        }
+      } catch {}
+    };
+    run();
+  }, [location.search, departmentId]);
 
   useEffect(() => {
     const fetchTasks = async () => {
@@ -453,7 +152,7 @@ const AdminSecondaryTasksPage: React.FC = () => {
     return out;
   }
 
-  function spansThuFriSat(startDate: Date, endDate: Date): boolean {
+  /* function spansThuFriSat(startDate: Date, endDate: Date): boolean {
     const s = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
     const e = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59, 999);
     const d = new Date(s);
@@ -467,15 +166,15 @@ const AdminSecondaryTasksPage: React.FC = () => {
       d.setDate(d.getDate() + 1);
     }
     return false;
-  }
+  } */
 
-  function fridaysInsideSpan(startDate: Date, endDate: Date): Date[] {
+  /* function fridaysInsideSpan(startDate: Date, endDate: Date): Date[] {
     const out: Date[] = [];
     const d = new Date(startDate);
     d.setHours(12, 0, 0, 0);
     while (d <= endDate) { if (d.getDay() === 5) out.push(new Date(d)); d.setDate(d.getDate() + 1); }
     return out;
-  }
+  } */
 
   // Main planning loader: fetch → compute → store → console.debug
   useEffect(() => {
@@ -505,66 +204,56 @@ const AdminSecondaryTasksPage: React.FC = () => {
           return true;
         });
 
-        // 2) Primary schedules overlapping the window (NEW PATH): /departments/{dep}/primarySchedules/*
-        const schedCol = collection(db, 'departments', departmentId, 'primarySchedules');
-        const schedSnap = await getDocs(schedCol);
-        const usedSchedules = schedSnap.docs
-          .map((d) => ({ id: d.id, data: d.data() as any }))
-          .filter((s) => {
-            const type = s.data.type || 'primary';
-            const sd = (s.data.startDate as Timestamp).toDate();
-            const ed = (s.data.endDate as Timestamp).toDate();
-            return type === 'primary' && sd <= windowEnd && ed >= windowStart;
-          });
-
-        // 3) Build per-worker primary tasks (clipped to window)
-        const primaryByWorker: Record<string, Array<{ taskId: string; taskName: string; startDate: string; endDate: string; scheduleId: string }>> = {};
-        for (const sched of usedSchedules) {
-          const sdata = sched.data;
-          const assignmentsMap = (sdata.assignmentsMap || {}) as Record<string, any>;
-          Object.keys(assignmentsMap).forEach((key) => {
-            const a = assignmentsMap[key] || {};
-            const sTs = a.startDate as Timestamp | undefined;
-            const eTs = a.endDate as Timestamp | undefined;
-            const workerId = String(a.workerId || '').trim();
-            if (!workerId || !sTs || !eTs) return;
-            const s = sTs.toDate();
-            const e = eTs.toDate();
-            if (e < windowStart || s > windowEnd) return;
-            const clippedStart = s < windowStart ? windowStart : s;
-            const clippedEnd = e > windowEnd ? windowEnd : e;
-            if (!primaryByWorker[workerId]) primaryByWorker[workerId] = [];
-            primaryByWorker[workerId].push({
-              taskId: String(a.taskId || ''),
-              taskName: String(a.taskName || ''),
-              startDate: new Date(clippedStart).toISOString(),
-              endDate: new Date(clippedEnd).toISOString(),
-              scheduleId: sched.id
-            });
-          });
-        }
-
-        // 4) Mandatory closing dates (Fridays) per worker based on weekend-spanning primary tasks
+        // 2) Read byWorker docs once (preferences + ledgers)
+        const byWorkerSnap = await getDocs(collection(db, 'departments', departmentId, 'workers', 'index', 'byWorker'));
+        const prefsByWorker: Record<string, Array<{ date: string; taskId: string | null; status?: 'preferred' | 'blocked' }>> = {};
         const mandatoryByWorker: Record<string, string[]> = {};
-        Object.keys(primaryByWorker).forEach((wid) => {
-          const spans = primaryByWorker[wid];
-          const frSet = new Set<string>();
-          spans.forEach((span) => {
-            const s = new Date(span.startDate);
-            const e = new Date(span.endDate);
-            if (spansThuFriSat(s, e)) {
-              fridaysInsideSpan(s, e).forEach((d) => frSet.add(formatDateDDMMYYYY(d)));
-            }
-          });
-          mandatoryByWorker[wid] = Array.from(frSet).sort((a, b) => {
-            // compare by dd/mm/yyyy
+        const primaryBusyDaysByWorker: Record<string, Set<string>> = {};
+        const lastClosingFridayByWorker: Record<string, string | null> = {};
+        byWorkerSnap.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          // Preferences filtered to window
+          const arr = (data?.preferences || []) as Array<{ date: Timestamp; taskId: string | null; status?: 'preferred' | 'blocked' }>;
+          const filtered = arr
+            .map((p) => ({ date: (p.date as Timestamp).toDate() as Date, taskId: p.taskId ?? null, status: p.status }))
+            .filter((p) => p.date >= windowStart && p.date <= windowEnd)
+            .map((p) => ({ date: formatDateDDMMYYYY(p.date), taskId: p.taskId, status: p.status }));
+          prefsByWorker[docSnap.id] = filtered;
+
+          // Mandatory closings based on ledgers (source: 'primary' only)
+          type ClosingEntry = { friday: Timestamp; source: 'primary'|'secondary'; scheduleId: string };
+          const history: ClosingEntry[] = Array.isArray(data?.closingHistory) ? data.closingHistory : [];
+          const future: ClosingEntry[] = Array.isArray(data?.futureClosings) ? data.futureClosings : [];
+          const all = [...history, ...future];
+          const fridaysPrimary = all
+            .filter((e) => e && e.source === 'primary')
+            .map((e) => (e.friday as Timestamp).toDate())
+            .filter((d) => d >= windowStart && d <= windowEnd)
+            .map((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0));
+          const ddmm = Array.from(new Set(fridaysPrimary.map((d) => formatDateDDMMYYYY(d)))).sort((a, b) => {
             const [da, ma, ya] = a.split('/').map(Number);
             const [db, mb, yb] = b.split('/').map(Number);
             return new Date(ya, ma - 1, da).getTime() - new Date(yb, mb - 1, db).getTime();
           });
+          mandatoryByWorker[docSnap.id] = ddmm;
+
+          // Primary busy days (Thu/Fri/Sat) derived from primary closing Fridays
+          const busy = new Set<string>();
+          fridaysPrimary.forEach((fr) => {
+            const thu = new Date(fr); thu.setDate(thu.getDate() - 1);
+            const sat = new Date(fr); sat.setDate(sat.getDate() + 1);
+            [thu, fr, sat].forEach((d) => {
+              if (d >= windowStart && d <= windowEnd) busy.add(formatDateDDMMYYYY(d));
+            });
+          });
+          primaryBusyDaysByWorker[docSnap.id] = busy;
+
+          // Last closing date (any source) for recency checks
+          const lastTs = (data?.lastClosingDate as Timestamp | undefined);
+          lastClosingFridayByWorker[docSnap.id] = lastTs ? formatDateDDMMYYYY(lastTs.toDate()) : null;
         });
 
-        // 5) Optimal closing dates via calculator for the window Fridays
+        // 3) Optimal closing dates via calculator for the window Fridays (required = primary closings from ledger)
         const calc = new ClosingScheduleCalculator();
         const optimalByWorker: Record<string, string[]> = {};
         eligibleWorkerIds.forEach((wid) => {
@@ -584,27 +273,30 @@ const AdminSecondaryTasksPage: React.FC = () => {
           optimalByWorker[wid] = res.optimalDates.map((d) => formatDateDDMMYYYY(d));
         });
 
-        // 6) Preferences from byWorker filtered to window
-        const byWorkerSnap = await getDocs(collection(db, 'departments', departmentId, 'workers', 'index', 'byWorker'));
-        const prefsByWorker: Record<string, Array<{ date: string; taskId: string | null; status?: 'preferred' | 'blocked' }>> = {};
-        byWorkerSnap.forEach((docSnap) => {
-          const data = docSnap.data() as any;
-          const arr = (data?.preferences || []) as Array<{ date: Timestamp; taskId: string | null; status?: 'preferred' | 'blocked' }>;
-          const filtered = arr
-            .map((p) => ({ date: (p.date as Timestamp).toDate() as Date, taskId: p.taskId ?? null, status: p.status }))
-            .filter((p) => p.date >= windowStart && p.date <= windowEnd)
-            .map((p) => ({ date: formatDateDDMMYYYY(p.date), taskId: p.taskId, status: p.status }));
-          prefsByWorker[docSnap.id] = filtered;
-        });
+        // 4) Pull statistics summary (per-worker minimal fields)
+        let statsPerWorker: Record<string, { totalSecondary?: number; closingAccuracyPct?: number | null }> = {};
+        try {
+          const sumSnap = await getDoc(doc(db, 'departments', departmentId, 'statistics', 'summary'));
+          const sum = (sumSnap.exists() ? (sumSnap.data() as any) : null) as any;
+          if (sum && sum.perWorker) {
+            Object.entries(sum.perWorker as Record<string, any>).forEach(([wid, entry]) => {
+              statsPerWorker[wid] = {
+                totalSecondary: typeof entry.totalSecondary === 'number' ? entry.totalSecondary : 0,
+                closingAccuracyPct: typeof entry.closingAccuracyPct === 'number' ? entry.closingAccuracyPct : null,
+              };
+            });
+          }
+        } catch {}
 
-        // 7) Build local payload and save to localStorage
+        // 5) Build local payload and save to localStorage (schedule-free)
         const payload = {
           generatedAt: new Date().toISOString(),
           departmentId,
           selectedRange: { start: rangeStart.toISOString(), end: rangeEnd.toISOString() },
           window: { start: windowStart.toISOString(), end: windowEnd.toISOString() },
           fridays: fridays.map((d) => formatDateDDMMYYYY(d)),
-          schedulesUsed: usedSchedules.map((s) => s.id),
+          schedulesUsed: [],
+          stats: { updatedAt: new Date().toISOString(), perWorker: statsPerWorker },
           workers: eligibleWorkerIds.reduce((acc: Record<string, any>, wid) => {
             const w = workersIndex[wid];
             acc[wid] = {
@@ -614,9 +306,11 @@ const AdminSecondaryTasksPage: React.FC = () => {
                 closingInterval: typeof w.closingInterval === 'number' ? w.closingInterval : 0,
                 qualifications: Array.isArray(w.qualifications) ? w.qualifications : []
               },
-              primaryTasks: (primaryByWorker[wid] || []),
+              primaryTasks: [],
+              primaryBusyDaysDDMM: Array.from(primaryBusyDaysByWorker[wid] || new Set<string>()),
               mandatoryClosingDates: mandatoryByWorker[wid] || [],
               optimalClosingDates: optimalByWorker[wid] || [],
+              lastClosingFridayDDMM: lastClosingFridayByWorker[wid] || null,
               preferencesInWindow: prefsByWorker[wid] || []
             };
             return acc;
@@ -626,7 +320,7 @@ const AdminSecondaryTasksPage: React.FC = () => {
         const key = `secondaryPlanning:${departmentId}`;
         try { localStorage.setItem(key, JSON.stringify(payload)); } catch {}
 
-        // 8) Debug output
+        // 6) Debug output
         try {
           /* eslint-disable no-console */
           console.groupCollapsed('[SecondaryPlanning] Saved to localStorage');
@@ -642,7 +336,6 @@ const AdminSecondaryTasksPage: React.FC = () => {
             console.log('[Worker]', wid, name, {
               closingInterval: w.profile.closingInterval,
               qualifications: w.profile.qualifications?.length || 0,
-              primaryTasks: (w.primaryTasks || []).length,
               mandatoryClosingDates: (w.mandatoryClosingDates || []).length,
               optimalClosingDates: (w.optimalClosingDates || []).length,
               preferencesInWindow: (w.preferencesInWindow || []).length
@@ -786,7 +479,7 @@ const AdminSecondaryTasksPage: React.FC = () => {
     try {
       const parsed = JSON.parse(raw);
       const generatedAt = parsed?.generatedAt ? new Date(parsed.generatedAt).getTime() : 0;
-      const ttlOk = generatedAt > 0 ? (Date.now() - generatedAt) < (2 * 60 * 60 * 1000) : true; // default accept if missing
+      const ttlOk = generatedAt > 0 ? (Date.now() - generatedAt) < (5 * 60 * 1000) : true; // 5 minutes TTL
       return ttlOk ? parsed : null;
     } catch {
       return null;
@@ -1139,6 +832,8 @@ const AdminSecondaryTasksPage: React.FC = () => {
     }
 
     try {
+      setIsSaving(true);
+      setSaveProgress({ phase: 'writingSchedule', processed: 0, total: 1 });
       const colRef = collection(db, 'departments', departmentId, 'secondarySchedules');
 
       // Decide whether to update existing or create new: if existing range differs, create new
@@ -1179,10 +874,18 @@ const AdminSecondaryTasksPage: React.FC = () => {
         });
         setCurrentSecondaryScheduleId(scheduleRef.id);
         await reloadPastSchedules();
+        // Update byWorker ledgers for weekend closings (secondary)
+        setSaveProgress({ phase: 'updatingLedgers', processed: 0, total: Object.keys(newAssignments).length || 1 });
+        const affected = Array.from(new Set(Object.values(newAssignments).map((a) => String(a.workerId || '').trim()).filter(Boolean)));
+        await updateByWorkerClosingsForSecondary(scheduleRef.id, newAssignments, departmentId, visibleTasks, affected);
+        // Update department statistics summary (secondary deltas)
+        setSaveProgress((p) => ({ ...p, phase: 'updatingStats' }));
+        try { await updateSummaryForSecondarySave(departmentId, undefined, newAssignments); } catch {}
       } else {
-        // Simplified: overwrite the entire document (keep createdAt/createdBy)
-        const snap = await getDoc(scheduleRef as any);
-        const existing = (snap.data() as any) || {};
+        // Capture previous assignments BEFORE overwrite for proper deltas and affected workers
+        const prevSnap = await getDoc(scheduleRef as any);
+        const existing = (prevSnap.exists() ? (prevSnap.data() as any) : {}) || {};
+        const prevAssignments = (existing.assignmentsMap || {}) as Record<string, { workerId: string; taskId: string; date: Timestamp }>;
         const createdAt: Timestamp = existing.createdAt || Timestamp.now();
         const createdBy: string = existing.createdBy || (auth.currentUser?.uid || 'unknown');
 
@@ -1200,6 +903,17 @@ const AdminSecondaryTasksPage: React.FC = () => {
           }, {} as Record<string, any>)
         }, { merge: false });
         await reloadPastSchedules();
+        // Update byWorker ledgers for weekend closings (secondary)
+        setSaveProgress({ phase: 'updatingLedgers', processed: 0, total: Object.keys(newAssignments).length || 1 });
+        const prevWorkerIds = new Set(Object.values(prevAssignments).map((a) => String(a.workerId || '').trim()).filter(Boolean));
+        const nextWorkerIds = new Set(Object.values(newAssignments).map((a) => String(a.workerId || '').trim()).filter(Boolean));
+        const affected = Array.from(new Set([...Array.from(prevWorkerIds), ...Array.from(nextWorkerIds)]));
+        await updateByWorkerClosingsForSecondary((scheduleRef as any).id, newAssignments, departmentId, visibleTasks, affected);
+        // Update department statistics summary (secondary deltas)
+        setSaveProgress((p) => ({ ...p, phase: 'updatingStats' }));
+        try {
+          await updateSummaryForSecondarySave(departmentId, prevAssignments, newAssignments);
+        } catch {}
       }
 
       try { alert('נשמר בהצלחה'); } catch {}
@@ -1209,11 +923,130 @@ const AdminSecondaryTasksPage: React.FC = () => {
       setCellData(new Map());
       setAssignedByDate({});
       setCurrentSecondaryScheduleId(null);
+      setSaveProgress({ phase: 'done', processed: 0, total: 0 });
     } catch (e) {
       console.error('שגיאה בשמירת סידור משימות משניות:', e);
       try { alert('שגיאה בשמירה'); } catch {}
     }
+    finally {
+      setIsSaving(false);
+    }
   };
+
+  /**
+   * Update byWorker closing ledgers for a saved secondary schedule.
+   * Creates one closing per Friday for tasks that are weekend closers (assign_weekends=true).
+   */
+  async function updateByWorkerClosingsForSecondary(
+    scheduleId: string,
+    assignments: Record<string, { taskId: string; workerId: string; workerName: string; date: Timestamp }>,
+    deptId: string,
+    allTasks: SecondaryTask[],
+    affectedWorkerIds?: string[]
+  ): Promise<void> {
+    try {
+      // Build quick lookup for weekend tasks
+      const weekendTaskIds = new Set(allTasks.filter(t => t.assign_weekends).map(t => String(t.id)));
+      if (weekendTaskIds.size === 0) return;
+
+      // Collect Friday closings per worker (from new assignments)
+      const byWorkerFridays = new Map<string, Date[]>();
+      Object.values(assignments).forEach((a) => {
+        const taskId = String(a.taskId || '');
+        if (!weekendTaskIds.has(taskId)) return;
+        const d = (a.date as Timestamp).toDate();
+        if (d.getDay() !== 5) return; // only Friday entries represent closing
+        const normalized = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+        const wid = String(a.workerId || '').trim();
+        if (!wid) return;
+        const arr = byWorkerFridays.get(wid) || [];
+        arr.push(normalized);
+        byWorkerFridays.set(wid, arr);
+      });
+
+      // Determine target worker set: explicit list if provided; else keys from current assignments
+      const targetWorkerIds = affectedWorkerIds && affectedWorkerIds.length > 0
+        ? Array.from(new Set(affectedWorkerIds))
+        : Array.from(byWorkerFridays.keys());
+
+      // For each affected worker, remove all entries from this scheduleId, then add new Friday entries, re-bucket, prune, recompute actual interval
+      // Concurrency limiting to reduce tail latency and retries under burst writes
+      const processInBatches = async <T,>(items: T[], batchSize: number, worker: (item: T) => Promise<void>) => {
+        if (batchSize <= 0) batchSize = 1;
+        for (let i = 0; i < items.length; i += batchSize) {
+          const slice = items.slice(i, i + batchSize);
+          await Promise.all(slice.map((it) => worker(it)));
+        }
+      };
+
+      const CONCURRENCY = 20;
+      let processed = 0;
+      const total = targetWorkerIds.length;
+      await processInBatches<string>(targetWorkerIds, CONCURRENCY, async (workerId) => {
+        const fridays = byWorkerFridays.get(workerId) || [];
+        await (async () => {
+          const ref = doc(db, 'departments', deptId, 'workers', 'index', 'byWorker', workerId);
+          const snap = await getDoc(ref);
+          const data = (snap.exists() ? (snap.data() as any) : {}) || {};
+          type ClosingEntry = { friday: Timestamp; source: 'primary'|'secondary'; scheduleId: string };
+          const existingHistory: ClosingEntry[] = Array.isArray(data.closingHistory) ? data.closingHistory : [];
+          const existingFuture: ClosingEntry[] = Array.isArray(data.futureClosings) ? data.futureClosings : [];
+
+          const historySansSchedule = existingHistory.filter((e) => e && e.scheduleId !== scheduleId);
+          const futureSansSchedule = existingFuture.filter((e) => e && e.scheduleId !== scheduleId);
+
+          const nowNoon = new Date(); nowNoon.setHours(12,0,0,0);
+          const additionsHistory: ClosingEntry[] = [];
+          const additionsFuture: ClosingEntry[] = [];
+          fridays.forEach((d) => {
+            const entry: ClosingEntry = { friday: Timestamp.fromDate(d), source: 'secondary', scheduleId };
+            if (d < nowNoon) additionsHistory.push(entry); else additionsFuture.push(entry);
+          });
+
+          let mergedHistory = [...historySansSchedule, ...additionsHistory]
+            .sort((a,b) => a.friday.toMillis() - b.friday.toMillis());
+          let mergedFuture = [...futureSansSchedule, ...additionsFuture]
+            .sort((a,b) => a.friday.toMillis() - b.friday.toMillis());
+
+          // Prune: keep only last N history entries and limit future horizon
+          const HISTORY_CAP = 150; // ~5-10 years
+          if (mergedHistory.length > HISTORY_CAP) {
+            mergedHistory = mergedHistory.slice(mergedHistory.length - HISTORY_CAP);
+          }
+          const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+          const horizon = new Date(nowNoon.getTime() + ONE_YEAR_MS);
+          mergedFuture = mergedFuture.filter((e) => e.friday.toDate() <= horizon);
+
+          let actualIntervalWeeks = 0;
+          if (mergedHistory.length >= 2) {
+            let sum = 0; let gaps = 0;
+            for (let i=1;i<mergedHistory.length;i++) {
+              const prev = mergedHistory[i-1].friday.toDate();
+              const cur = mergedHistory[i].friday.toDate();
+              const diffDays = Math.floor((cur.getTime()-prev.getTime())/(24*60*60*1000));
+              sum += diffDays/7; gaps += 1;
+            }
+            actualIntervalWeeks = Math.round(sum/Math.max(1,gaps));
+          }
+
+          // Derive lastClosingDate as latest history Friday
+          const lastClosingDate = mergedHistory.length > 0 ? mergedHistory[mergedHistory.length - 1].friday : (data.lastClosingDate || null);
+
+          await setDoc(ref, {
+            closingHistory: mergedHistory,
+            futureClosings: mergedFuture,
+            actualClosingInterval: actualIntervalWeeks,
+            lastClosingDate,
+            updatedAt: Timestamp.now()
+          }, { merge: true });
+        })();
+        processed += 1;
+        setSaveProgress((p) => (p.phase === 'updatingLedgers' ? { ...p, processed, total } : p));
+      });
+    } catch (err) {
+      try { console.warn('[SecondaryClosings] ledger update failed (non-fatal):', err); } catch {}
+    }
+  }
 
   return (
     <>
@@ -1242,8 +1075,16 @@ const AdminSecondaryTasksPage: React.FC = () => {
               <Button size="md" fullWidth variant="secondary" onClick={handleLoadPreferences}>טען העדפות</Button>
               <Button size="md" fullWidth variant="primary" onClick={handleAutoAssign}>שבץ אוטומטית</Button>
               <Button size="md" fullWidth variant="secondary" onClick={handleClearAll}>נקה הכל</Button>
-              <Button size="md" fullWidth variant="attention" className="brightness-110" onClick={handleSave} disabled={!canSave}>שמור</Button>
+              <Button size="md" fullWidth variant="attention" className="brightness-110" onClick={handleSave} disabled={!canSave || isSaving}>
+                {isSaving ? '⏳ שומר…' : 'שמור'}
+              </Button>
             </div>
+            <SaveProgress
+              visible={isSaving}
+              phase={saveProgress.phase}
+              processed={saveProgress.processed}
+              total={saveProgress.total}
+            />
           </div>
 
           {startDate && endDate ? (
@@ -1272,25 +1113,51 @@ const AdminSecondaryTasksPage: React.FC = () => {
 
           {/* Past Secondary Schedules - card list with delete */}
           <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20 mt-6">
-            <h3 className="text-xl font-bold text-white mb-4">סידורים שנשמרו</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-white">סידורים שנשמרו</h3>
+              {/* Simple refresh button and capped view */}
+              <button
+                onClick={async () => { try { await reloadPastSchedules(); } catch {} }}
+                className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm"
+              >
+                רענן רשימה
+              </button>
+            </div>
             {pastSchedules.length === 0 ? (
               <div className="text-white/60">אין סידורים שמורים</div>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {pastSchedules.map((s) => (
+                {pastSchedules.slice(0, 6).map((s) => (
                   <div key={s.id} className={`group relative rounded-xl border border-white/20 bg-white/10 p-4 hover:bg-white/15 transition cursor-pointer ${currentSecondaryScheduleId === s.id ? 'ring-2 ring-purple-400/60' : ''}`}
                        onClick={() => handleSelectPastSchedule(s.id)}>
                     <div className="text-white font-semibold text-sm mb-1">{formatDateDDMMYYYY(s.startDate)} — {formatDateDDMMYYYY(s.endDate)}</div>
                     <div className="text-white/60 text-xs">עודכן {formatDateDDMMYYYY(s.updatedAt)}</div>
                     <button
-                      className="absolute top-2 left-2 text-red-300 hover:text-red-400 hover:scale-110 transition"
+                      className="absolute top-2 left-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-md p-1 border border-white/20"
                       title="מחק"
                       onClick={async (e) => {
                         e.stopPropagation();
                         const ok = confirm(`Are you sure you want to delete schedule ${formatDateDDMMYYYY(s.startDate)} - ${formatDateDDMMYYYY(s.endDate)}?`);
                         if (!ok) return;
                         try {
-                          await deleteDoc(doc(db, 'departments', departmentId, 'secondarySchedules', s.id));
+                          // Load prev assignments before delete to update ledgers and statistics
+                          const ref = doc(db, 'departments', departmentId, 'secondarySchedules', s.id);
+                          const snap = await getDoc(ref);
+                          const prev = (snap.exists() ? (snap.data() as any) : {}) || {};
+                          const prevAssignments = (prev.assignmentsMap || {}) as Record<string, { workerId: string; taskId: string; date: Timestamp }>;
+
+                          await deleteDoc(ref);
+
+                          // Affected workers
+                          const affected = Array.from(new Set(Object.values(prevAssignments).map((a) => String(a.workerId || '').trim()).filter(Boolean)));
+                          // Clean ledgers for affected workers
+                          try {
+                            await updateByWorkerClosingsForSecondary(s.id, {}, departmentId, visibleTasks, affected);
+                          } catch {}
+                          // Update statistics (secondary deltas negative)
+                          try {
+                            await updateSummaryForSecondarySave(departmentId, prevAssignments, {} as any);
+                          } catch {}
                           if (currentSecondaryScheduleId === s.id) {
                             setCurrentSecondaryScheduleId(null);
                             setCellData(new Map());
@@ -1307,6 +1174,25 @@ const AdminSecondaryTasksPage: React.FC = () => {
                     </button>
                   </div>
                 ))}
+                {pastSchedules.length > 6 && (
+                  <div className="rounded-xl border border-white/20 bg-white/10 p-4 text-right">
+                    <div className="text-white/70 text-sm mb-2">מוצגים 6 אחרונים</div>
+                    <details className="bg-white/5 rounded-lg">
+                      <summary className="cursor-pointer text-white/90 px-3 py-2 select-none">הצג היסטוריה</summary>
+                      <div className="max-h-64 overflow-y-auto mt-2 pr-1">
+                        {pastSchedules.slice(6).map((s) => (
+                          <button
+                            key={`more-${s.id}`}
+                            onClick={() => { handleSelectPastSchedule(s.id); /* collapsible auto-closes natively */ }}
+                            className="w-full text-right px-3 py-2 rounded-lg hover:bg-white/10 text-white text-sm border border-transparent hover:border-white/10"
+                          >
+                            {formatDateDDMMYYYY(s.startDate)} — {formatDateDDMMYYYY(s.endDate)}
+                          </button>
+                        ))}
+                      </div>
+                    </details>
+                  </div>
+                )}
               </div>
             )}
           </div>

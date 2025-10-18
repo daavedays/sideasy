@@ -31,8 +31,10 @@ import {
   checkScheduleOverlap,
   getScheduleById,
   deleteSchedule,
+  getPrimarySchedules,
 } from '../../lib/firestore/primarySchedules';
 import { formatDateDDMMYYYY } from '../../lib/utils/dateUtils';
+import { formatDateFull, formatDateRange } from '../../lib/utils/weekUtils';
 
 const PrimaryTasksDash: React.FC = () => {
   const navigate = useNavigate();
@@ -48,6 +50,9 @@ const PrimaryTasksDash: React.FC = () => {
   const [pastSchedules, setPastSchedules] = useState<PastScheduleDisplay[]>([]);
   const [selectedSchedule, setSelectedSchedule] = useState<PrimaryScheduleUI | null>(null);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyList, setHistoryList] = useState<PastScheduleDisplay[]>([]);
+  const [isRefreshingCards, setIsRefreshingCards] = useState(false);
 
   /**
    * Load past schedules from Firestore (4 latest)
@@ -57,8 +62,25 @@ const PrimaryTasksDash: React.FC = () => {
       if (!departmentId) return;
 
       try {
+        // Try cached cards first (TTL 10 minutes)
+        const cacheKey = `pastPrimaryCards:${departmentId}`;
+        let hydrated = false;
+        try {
+          const raw = localStorage.getItem(cacheKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            const ts = parsed?.savedAt ? new Date(parsed.savedAt).getTime() : 0;
+            const ttl = 10 * 60 * 1000;
+            if (ts && (Date.now() - ts) < ttl && Array.isArray(parsed.cards)) {
+              setPastSchedules(parsed.cards as PastScheduleDisplay[]);
+              hydrated = true;
+            }
+          }
+        } catch {}
+
         const schedules = await getPastSchedulesDisplay(departmentId);
         setPastSchedules(schedules);
+        try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: new Date().toISOString(), cards: schedules })); } catch {}
         console.log(`Loaded ${schedules.length} past schedules`);
       } catch (error) {
         console.error('Error loading past schedules:', error);
@@ -109,6 +131,27 @@ const PrimaryTasksDash: React.FC = () => {
         scheduleId: selectedSchedule.scheduleId,
       }
     });
+  };
+
+  const loadHistory = async () => {
+    if (!departmentId) return;
+    try {
+      const all = await getPrimarySchedules(departmentId, 50);
+      const mapped: PastScheduleDisplay[] = all.map((schedule) => ({
+        scheduleId: schedule.scheduleId,
+        label: `${formatDateRange(schedule.startDate, schedule.endDate)} (${schedule.startDate.getFullYear()}) - עודכן ${formatDateFull(schedule.updatedAt)}`,
+        startDate: schedule.startDate,
+        endDate: schedule.endDate,
+        year: schedule.startDate.getFullYear(),
+        updatedAt: schedule.updatedAt,
+      }));
+      // Exclude the ones already visible in the cards to keep dropdown clean
+      const visibleIds = new Set(pastSchedules.map(s => s.scheduleId));
+      setHistoryList(mapped.filter(m => !visibleIds.has(m.scheduleId)));
+    } catch (e) {
+      console.error('Error loading schedule history:', e);
+      setHistoryList([]);
+    }
   };
 
   /**
@@ -183,12 +226,58 @@ const PrimaryTasksDash: React.FC = () => {
             </p>
           </div>
 
-          {/* Past Schedules Cards */}
+          {/* Past Schedules Cards with history dropdown */}
           {pastSchedules.length > 0 && (
             <div className="mb-8">
-              <h2 className="text-white font-semibold mb-4 text-lg md:text-xl">
-                תורנויות קיימות:
-              </h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-white font-semibold text-lg md:text-xl">
+                  תורנויות קיימות:
+                </h2>
+                <div className="relative">
+                  <button
+                    onClick={async () => { setHistoryOpen(v => !v); if (!historyOpen) { await loadHistory(); } }}
+                    className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm"
+                  >
+                    היסטוריה
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!departmentId) return;
+                      try {
+                        setIsRefreshingCards(true);
+                        try { localStorage.removeItem(`pastPrimaryCards:${departmentId}`); } catch {}
+                        const fresh = await getPastSchedulesDisplay(departmentId);
+                        setPastSchedules(fresh);
+                        try { localStorage.setItem(`pastPrimaryCards:${departmentId}`, JSON.stringify({ savedAt: new Date().toISOString(), cards: fresh })); } catch {}
+                      } catch (e) {
+                        console.error('רענון כשל', e);
+                      } finally {
+                        setIsRefreshingCards(false);
+                      }
+                    }}
+                    className="ml-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm"
+                  >
+                    {isRefreshingCards ? '⏳ מרענן…' : '🔄 רענן' }
+                  </button>
+                  {historyOpen && (
+                    <div className="absolute right-0 mt-2 w-80 max-h-80 overflow-y-auto bg-slate-900/95 backdrop-blur-xl border border-white/20 rounded-xl shadow-2xl p-2 z-50" style={{ animation: 'slideDown 0.2s ease-out' }}>
+                      {historyList.length === 0 ? (
+                        <div className="text-white/60 text-sm px-3 py-2">אין פריטים נוספים</div>
+                      ) : (
+                        historyList.map((s) => (
+                          <button
+                            key={s.scheduleId}
+                            onClick={() => { setHistoryOpen(false); handleSelectSchedule(s.scheduleId); }}
+                            className="w-full text-right px-3 py-2 rounded-lg hover:bg-white/10 text-white text-sm border border-transparent hover:border-white/10"
+                          >
+                            {formatDateRange(s.startDate, s.endDate)} — עודכן {formatDateDDMMYYYY(s.updatedAt)}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4">
                 {pastSchedules.map((schedule) => (
                   <div
@@ -202,7 +291,7 @@ const PrimaryTasksDash: React.FC = () => {
                       }
                     `}
                   >
-                    {/* Delete tiny trash icon */}
+                    {/* Delete tiny trash icon (gray theme) */}
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
@@ -210,7 +299,6 @@ const PrimaryTasksDash: React.FC = () => {
                         if (!confirmed || !departmentId) return;
                         try {
                           await deleteSchedule(departmentId, schedule.scheduleId);
-                          // Remove from UI immediately
                           setPastSchedules(prev => prev.filter(s => s.scheduleId !== schedule.scheduleId));
                           if (selectedScheduleId === schedule.scheduleId) {
                             setSelectedScheduleId(null);
@@ -222,7 +310,7 @@ const PrimaryTasksDash: React.FC = () => {
                         }
                       }}
                       title="מחק"
-                      className="absolute left-2 top-2 text-white/70 hover:text-white bg-red-600/60 hover:bg-red-600/80 rounded-md p-1 opacity-90"
+                      className="absolute left-2 top-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-md p-1 border border-white/20"
                     >
                       🗑️
                     </button>
@@ -265,7 +353,7 @@ const PrimaryTasksDash: React.FC = () => {
                 p-6 md:p-8 rounded-2xl border-2 transition-all duration-300
                 backdrop-blur-md
                 ${!selectedSchedule
-                  ? 'bg-gradient-to-br from-green-600/40 to-emerald-600/40 border-green-400/60 hover:from-green-500/50 hover:to-emerald-500/50 shadow-lg shadow-green-500/30 scale-[1.02]'
+                  ? 'bg-gradient-to-br from-green-600/40 to-emerald-600/40 border-green-400/60 hover:from-green-500/50 hover:to-emerald-500/50 shadow-lg shadow-green-500/30 scale-[1.02] blink-soft'
                   : 'bg-gradient-to-br from-slate-700/30 to-slate-800/30 border-slate-600/30 hover:from-slate-600/40 hover:to-slate-700/40 hover:border-slate-500/40'
                 }
               `}
@@ -289,7 +377,7 @@ const PrimaryTasksDash: React.FC = () => {
                 p-6 md:p-8 rounded-2xl border-2 transition-all duration-300
                 backdrop-blur-md
                 ${selectedSchedule
-                  ? 'bg-gradient-to-br from-orange-600/40 to-amber-600/40 border-orange-400/60 hover:from-orange-500/50 hover:to-amber-500/50 shadow-lg shadow-orange-500/30 scale-[1.02] cursor-pointer'
+                  ? 'bg-gradient-to-br from-orange-600/40 to-amber-600/40 border-orange-400/60 hover:from-orange-500/50 hover:to-amber-500/50 shadow-lg shadow-orange-500/30 scale-[1.02] cursor-pointer blink-soft'
                   : 'bg-gradient-to-br from-slate-700/30 to-slate-800/30 border-slate-600/30 cursor-not-allowed opacity-70'
                 }
               `}

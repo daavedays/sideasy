@@ -94,7 +94,7 @@ const OwnerDash: React.FC = () => {
       title: 'סטטיסטיקות',
       description: 'צפה בסטטיסטיקות מחלקה',
       icon: '📊',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/owner/statistics'),
       color: 'from-green-600 to-emerald-600',
       badge: null
     }

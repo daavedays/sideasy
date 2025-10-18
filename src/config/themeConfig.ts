@@ -69,7 +69,7 @@ export const GRADIENT_OVERLAYS = {
  * - 'coolSteel'
  * - 'originalPurple'
  */
-export const ACTIVE_GRADIENT_OVERLAY: keyof typeof GRADIENT_OVERLAYS = 'warmSunset';
+export const ACTIVE_GRADIENT_OVERLAY: keyof typeof GRADIENT_OVERLAYS = 'neutralCharcoal';
 
 /**
  * Helper function to get the active gradient overlay class

@@ -17,6 +17,8 @@ import PrimaryTasksDash from '../common/PrimaryTasksDash';
 import PrimaryTasksTableView from '../common/PrimaryTasksTableView';
 // primaryTaskPage remains available via import when needed for other routes
 import AdminSecondaryTasksPage from './secondaryTasksPage';
+import StatisticsPage from '../common/StatisticsPage';
+import CombinedSchedulePage from '../common/combinedSchedule';
 
 const AdminRouter: React.FC = () => {
   return (
@@ -27,6 +29,8 @@ const AdminRouter: React.FC = () => {
       <Route path="primary-tasks" element={<PrimaryTasksDash />} />
       <Route path="primary-tasks/table-view" element={<PrimaryTasksTableView />} />
       <Route path="work-schedule" element={<AdminSecondaryTasksPage />} />
+      <Route path="combined-schedule" element={<CombinedSchedulePage />} />
+      <Route path="statistics" element={<StatisticsPage />} />
       <Route path="settings" element={<AdminSettings />} />
       {/* Future routes will go here:
         - /admin/shifts

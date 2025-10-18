@@ -39,8 +39,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() 
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer';
       
-      // Allow owner to approve/update users in their department
-      // Owner can approve admins and workers in their department
+      // Allow owner to update users in their department (general non-critical fields)
       allow update: if isAuthenticated()
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'owner'
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.departmentId == resource.data.departmentId
@@ -48,6 +47,16 @@ service cloud.firestore {
         && request.resource.data.role != 'developer'  // Can't update developers
         && !request.resource.data.diff(resource.data).affectedKeys()
           .hasAny(['userId', 'departmentId', 'role', 'email']);
+
+      // Special-case: Owner can change role only between 'admin' and 'worker' for users in same department
+      // Allowed keys to change: 'role' and 'updatedAt' only
+      allow update: if isAuthenticated()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'owner'
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.departmentId == resource.data.departmentId
+        && resource.data.role in ['admin', 'worker']
+        && request.resource.data.role in ['admin', 'worker']
+        && request.resource.data.role != resource.data.role
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'updatedAt']);
       
       // Allow admin to approve workers in their department
       // Admin can ONLY approve workers (not other admins or owners)
@@ -91,6 +100,12 @@ service cloud.firestore {
         && getUserData().role == 'owner'
         && getUserData().departmentId == departmentId
         && resource.data.ownerId == request.auth.uid;
+
+      // Owner may also update only counts fields (adminCount/workerCount/updatedAt) to support role changes
+      allow update: if isAuthenticated()
+        && getUserData().role == 'owner'
+        && getUserData().departmentId == departmentId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['adminCount', 'workerCount', 'updatedAt']);
       
       // Admin can update department counts (adminCount, workerCount) in their department
       allow update: if isAuthenticated()
@@ -215,10 +230,10 @@ service cloud.firestore {
         && byWorkerId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['preferences', 'updatedAt']);
 
-      // 2) Developer/Owner/Admin can create or update full doc (initialization/maintenance)
-      allow create, update: if isAuthenticated() && (
-        isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment()
-      );
+      // 2) Developer/Owner/Admin can create or update doc, but MUST NOT modify 'preferences'
+      allow create: if isAuthenticated() && (isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment());
+      allow update: if isAuthenticated() && (isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment())
+        && !request.resource.data.diff(resource.data).changedKeys().hasAny(['preferences']);
       allow delete: if isAuthenticated() && isDeveloper();
     }
     
@@ -300,8 +315,8 @@ service cloud.firestore {
         return getUserData().role == 'developer';
       }
 
-      // Reads: developer/owner/admin. (Add worker read later if needed)
-      allow read: if isAuthenticated() && (isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment());
+      // Reads: developer/owner/admin and workers in their department (read-only)
+      allow read: if isAuthenticated() && (isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment() || (getUserData().role == 'worker' && getUserData().departmentId == departmentId));
 
       // Create/Delete: owner or admin of this department
       allow create, delete: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment());
@@ -311,6 +326,49 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).changedKeys().hasOnly([
           'scheduleId', 'type', 'startDate', 'endDate', 'createdAt', 'createdBy', 'updatedAt', 'assignmentsMap'
         ]);
+    }
+
+    // Pattern: /departments/{departmentId}/publishedCombinedSchedules/{combinedId}
+    // Stores fully-rendered combined schedules for worker viewing
+    match /departments/{departmentId}/publishedCombinedSchedules/{combinedId} {
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+      function isOwnerOfDepartment() { return getUserData().role == 'owner' && getUserData().departmentId == departmentId; }
+      function isAdminOfDepartment() { return getUserData().role == 'admin' && getUserData().departmentId == departmentId; }
+      function isWorkerInDepartment() { return getUserData().role == 'worker' && getUserData().departmentId == departmentId; }
+      function isDeveloper() { return getUserData().role == 'developer'; }
+
+      // Read access for all roles in department (developer allowed too for maintenance)
+      allow read: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment() || isWorkerInDepartment() || isDeveloper());
+
+      // Create/update/delete only by owner/admin of this department
+      allow create, delete: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment());
+      allow update: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment())
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'scheduleId', 'departmentId', 'startDate', 'endDate', 'createdAt', 'updatedAt', 'createdBy', 'tasks', 'assignments'
+        ]);
+    }
+
+    // Pattern: /departments/{departmentId}/notifications/{notificationId}
+    // Lightweight per-department notifications (e.g., schedule published)
+    match /departments/{departmentId}/notifications/{notificationId} {
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+      function isOwnerOfDepartment() { return getUserData().role == 'owner' && getUserData().departmentId == departmentId; }
+      function isAdminOfDepartment() { return getUserData().role == 'admin' && getUserData().departmentId == departmentId; }
+      function isWorkerInDepartment() { return getUserData().role == 'worker' && getUserData().departmentId == departmentId; }
+      function isDeveloper() { return getUserData().role == 'developer'; }
+
+      // Read for department members and developer
+      allow read: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment() || isWorkerInDepartment() || isDeveloper());
+
+      // Create/update/delete by owner/admin (workers cannot write notifications)
+      allow create, delete: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment());
+      // Allow updating readBy or updatedAt only (mark as read)
+      allow update: if isAuthenticated() && (isOwnerOfDepartment() || isAdminOfDepartment() || isWorkerInDepartment())
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['readBy', 'updatedAt']);
     }
     
     // Pattern: /departments/{departmentId}/tasks/{taskId}
@@ -324,11 +382,19 @@ service cloud.firestore {
     
     // Pattern: /departments/{departmentId}/statistics/{statisticId}
     match /departments/{departmentId}/statistics/{statisticId} {
-      // Anyone authenticated can read
+      // Role helpers
+      function getUserData() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      }
+      function isDeveloper() { return getUserData().role == 'developer'; }
+      function isOwnerOfDepartment() { return getUserData().role == 'owner' && getUserData().departmentId == departmentId; }
+      function isAdminOfDepartment() { return getUserData().role == 'admin' && getUserData().departmentId == departmentId; }
+
+      // Reads: any authenticated user in the app can read statistics
       allow read: if isAuthenticated();
-      
-      // Anyone authenticated can write
-      allow write: if isAuthenticated();
+
+      // Writes: only developer/owner/admin of the department
+      allow write: if isAuthenticated() && (isDeveloper() || isOwnerOfDepartment() || isAdminOfDepartment());
     }
     
     // Pattern: /departments/{departmentId}/taskDefinitions/{docId}

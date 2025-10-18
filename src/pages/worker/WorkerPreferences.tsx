@@ -67,6 +67,42 @@ const WorkerPreferences: React.FC = () => {
   const [departmentId, setDepartmentId] = useState<string>('');
   const [disabledDateKeys, setDisabledDateKeys] = useState<Set<string>>(new Set());
   const [disabledTooltips, setDisabledTooltips] = useState<Map<string, string>>(new Map());
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Preferences configuration (loaded from department)
+  type DayOfWeek = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
+  const [maxBlockedTasksPerWeek, setMaxBlockedTasksPerWeek] = useState<number | null>(null); // null = unlimited
+  const [weeklyCutoff, setWeeklyCutoff] = useState<{ enabled: boolean; dayOfWeek: DayOfWeek; hour: number; minute: number }>({
+    enabled: false,
+    dayOfWeek: 'thu',
+    hour: 23,
+    minute: 59
+  });
+
+  // Helper: compute locked week window (Sun..Sat) for "upcoming week" after this week's cutoff passes
+  const getLockedWeekWindow = (): { start: Date; end: Date } | null => {
+    if (!weeklyCutoff.enabled) return null;
+    const now = new Date();
+    const dayOfWeekMap: Record<DayOfWeek, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+    const dow = now.getDay();
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - dow);
+    weekStart.setHours(0, 0, 0, 0);
+    const cutoffDow = dayOfWeekMap[weeklyCutoff.dayOfWeek];
+    const cutoff = new Date(weekStart);
+    cutoff.setDate(weekStart.getDate() + cutoffDow);
+    cutoff.setHours(weeklyCutoff.hour, weeklyCutoff.minute, 0, 0);
+
+    if (now.getTime() > cutoff.getTime()) {
+      const nextWeekStart = new Date(weekStart);
+      nextWeekStart.setDate(weekStart.getDate() + 7);
+      const nextWeekEnd = new Date(nextWeekStart);
+      nextWeekEnd.setDate(nextWeekStart.getDate() + 6);
+      nextWeekEnd.setHours(23, 59, 59, 999);
+      return { start: nextWeekStart, end: nextWeekEnd };
+    }
+    return null;
+  };
 
   /**
    * Get today's date at midnight (for comparison purposes)
@@ -145,6 +181,27 @@ const WorkerPreferences: React.FC = () => {
     fetchUserDepartment();
   }, []);
 
+  const handleRefresh = async () => {
+    if (!departmentId || !auth.currentUser) return;
+    try {
+      setIsRefreshing(true);
+      // Force re-fetch of tasks and byWorker (clear any potential caches)
+      const defs = await getTaskDefinitions(departmentId);
+      setTasks(defs?.secondary_tasks?.definitions || []);
+
+      const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', auth.currentUser!.uid);
+      const byWorkerSnap = await getDoc(byWorkerRef);
+      const prefs = byWorkerSnap.exists() ? (((byWorkerSnap.data() as any).preferences || []) as any[]) : [];
+      const mapped = (prefs || []).map((p: any) => ({ date: p.date, taskId: p.taskId ?? null, status: p.status || (p.taskId ? 'preferred' : 'blocked') }));
+      setCurrentWorkerPreferences(mapped);
+    } catch (e) {
+      console.error('שגיאה ברענון נתונים', e);
+      try { alert('שגיאה ברענון הנתונים'); } catch {}
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   /**
    * Fetch secondary tasks and current worker's data when department is loaded
    * COST OPTIMIZATION: Only fetch current worker's document, not all workers
@@ -176,6 +233,30 @@ const WorkerPreferences: React.FC = () => {
           const bw = byWorkerSnap.data() as any;
           qualifications = bw.qualifications || [];
           preferencesFromByWorker = bw.preferences || [];
+        }
+
+        // Load department preferencesConfig
+        try {
+          const deptDocRef = doc(db, 'departments', departmentId);
+          const deptSnap = await getDoc(deptDocRef);
+          if (deptSnap.exists()) {
+            const data = deptSnap.data() as any;
+            const prefs = data.preferencesConfig || {};
+            setMaxBlockedTasksPerWeek(
+              prefs.maxBlockedTasksPerWeek === null || prefs.maxBlockedTasksPerWeek === undefined
+                ? (prefs.maxBlockedTasksPerDay === null || prefs.maxBlockedTasksPerDay === undefined ? null : Number(prefs.maxBlockedTasksPerDay))
+                : Number(prefs.maxBlockedTasksPerWeek)
+            );
+            const wc = prefs.weeklyCutoff || {};
+            setWeeklyCutoff({
+              enabled: Boolean(wc.enabled),
+              dayOfWeek: (wc.dayOfWeek as DayOfWeek) || 'thu',
+              hour: typeof wc.hour === 'number' ? wc.hour : 23,
+              minute: typeof wc.minute === 'number' ? wc.minute : 59
+            });
+          }
+        } catch (e) {
+          // Non-fatal
         }
 
         const worker: Worker = {
@@ -242,6 +323,23 @@ const WorkerPreferences: React.FC = () => {
         }
         setDisabledDateKeys(keys);
         setDisabledTooltips(tips);
+
+        // Apply locked-week window (disable those dates additionally)
+        const locked = getLockedWeekWindow();
+        if (locked) {
+          const fmt = (d: Date) => `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()}`;
+          const from = new Date(Math.max(locked.start.getTime(), rs.getTime()));
+          const to = new Date(Math.min(locked.end.getTime(), re.getTime()));
+          if (from.getTime() <= to.getTime()) {
+            for (let cur = new Date(from); cur.getTime() <= to.getTime(); cur.setDate(cur.getDate() + 1)) {
+              const k = fmt(cur);
+              keys.add(k);
+              tips.set(k, 'לא ניתן לבחור: חלון ההגשה לשבוע הקרוב נסגר');
+            }
+            setDisabledDateKeys(new Set(keys));
+            setDisabledTooltips(new Map(tips));
+          }
+        }
       } catch (e) {
         console.warn('primaryTasks disable compute failed', e);
         setDisabledDateKeys(new Set());
@@ -327,6 +425,13 @@ const WorkerPreferences: React.FC = () => {
       alert('לא ניתן להגיש בקשות לתאריכים שעברו');
       return;
     }
+
+    // Weekly cutoff enforcement: after this week's cutoff passes, block NEXT week (Sun..Sat)
+    const locked = getLockedWeekWindow();
+    if (locked && clickedDate.getTime() >= locked.start.getTime() && clickedDate.getTime() <= locked.end.getTime()) {
+      alert('המועד להגשת העדפות לשבוע הקרוב עבר. ניתן להגיש לשבועות הבאים.');
+      return;
+    }
     
     setSelectedCell({ taskId, date });
     setShowModal(true);
@@ -397,6 +502,39 @@ const WorkerPreferences: React.FC = () => {
         });
       }
     } else if (action === 'blockTask') {
+      // Enforce per-week max blocked tasks limit (ignore disabled-by-primary dates)
+      if (maxBlockedTasksPerWeek !== null) {
+        // Compute current week start/end (Sun..Sat)
+        const base = new Date(date);
+        const dow = base.getDay(); // 0..6
+        const weekStart = new Date(base);
+        weekStart.setDate(base.getDate() - dow);
+        weekStart.setHours(0, 0, 0, 0);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+        weekEnd.setHours(23, 59, 59, 999);
+
+        const fmt = (d: Date) => `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()}`;
+
+        const blockedCountThisWeek = Array.from(newCellData.values()).reduce((acc, cell) => {
+          const cellDate = new Date(cell.date);
+          // count only within the same week window
+          if (cellDate.getTime() < weekStart.getTime() || cellDate.getTime() > weekEnd.getTime()) return acc;
+          // skip primary-disabled dates
+          const dateKey = fmt(cellDate);
+          if (disabledDateKeys.has(dateKey)) return acc;
+          // count this worker's blocked entries
+          const workerRec = cell.workers.find(w => w.workerId === workerId);
+          if (!workerRec) return acc;
+          return workerRec.status === 'blocked' ? acc + 1 : acc;
+        }, 0);
+
+        const existingForThisTask = newCellData.get(key)?.workers.find(w => w.workerId === workerId && w.status === 'blocked');
+        if (!existingForThisTask && blockedCountThisWeek >= maxBlockedTasksPerWeek) {
+          alert('הגעת למספר המקסימלי של חסימות בשבוע');
+          return;
+        }
+      }
       // Block this specific task on this date for current worker
       const existingCell = newCellData.get(key);
       const newWorkerData = {
@@ -424,7 +562,14 @@ const WorkerPreferences: React.FC = () => {
         });
       }
     } else if (action === 'blockDay') {
-      // Block ENTIRE day - add blocked entry for ALL tasks on this date
+      // Product decision: hide whole-day block UI when limit is active; as a safety, no-op here
+      if (maxBlockedTasksPerWeek !== null) {
+        alert('חסימת יום שלם אינה זמינה כאשר קיימת מגבלה יומית על חסימות.');
+        setShowModal(false);
+        setSelectedCell(null);
+        return;
+      }
+      // If unlimited, apply legacy whole-day block behavior
       tasks.forEach(task => {
         const dayKey = getCellKey(task.id, date);
         const existingCell = newCellData.get(dayKey);
@@ -513,6 +658,7 @@ const WorkerPreferences: React.FC = () => {
       type DayAgg = { blocked: Set<string>; preferred: Set<string> };
       const byDay = new Map<number, DayAgg>();
 
+      const locked = getLockedWeekWindow();
       Array.from(cellData.values()).forEach((cell) => {
         const currentWorkerInCell = cell.workers.find(w => w.workerId === currentWorker.workerId);
         if (!currentWorkerInCell) return;
@@ -520,6 +666,7 @@ const WorkerPreferences: React.FC = () => {
         const cellDate = new Date(cell.date);
         cellDate.setHours(0, 0, 0, 0);
         if (cellDate < today) return;
+        if (locked && cellDate.getTime() >= locked.start.getTime() && cellDate.getTime() <= locked.end.getTime()) return; // skip locked upcoming week
 
         const key = cellDate.getTime();
         const group = byDay.get(key) || { blocked: new Set<string>(), preferred: new Set<string>() };
@@ -623,6 +770,15 @@ const WorkerPreferences: React.FC = () => {
             <p className="text-lg md:text-xl text-white/80">
               בחר טווח תאריכים וסמן העדפות עבור משימות משניות
             </p>
+            <div className="mt-3">
+              <button
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm"
+              >
+                {isRefreshing ? '⏳ מרענן…' : '🔄 רענן נתונים'}
+              </button>
+            </div>
           </div>
 
           {/* Date Range Selector */}
@@ -737,13 +893,16 @@ const WorkerPreferences: React.FC = () => {
                 <span>העדף משימה זו</span>
               </button>
               
-              <button
-                onClick={() => handlePreferenceAction('blockDay')}
-                className="w-full bg-red-600/80 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-3"
-              >
-                <span className="text-2xl">✕</span>
-                <span>חסום יום שלם</span>
-              </button>
+              {/* Hide whole-day block when weekly limit is active */}
+              {maxBlockedTasksPerWeek === null && (
+                <button
+                  onClick={() => handlePreferenceAction('blockDay')}
+                  className="w-full bg-red-600/80 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-3"
+                >
+                  <span className="text-2xl">✕</span>
+                  <span>חסום יום שלם</span>
+                </button>
+              )}
               
               <button
                 onClick={() => handlePreferenceAction('blockTask')}

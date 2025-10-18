@@ -48,14 +48,18 @@ type WorkerProfile = {
 
 type WorkerPayload = {
   profile: WorkerProfile;
-  primaryTasks: Array<{
+  // New ledger-based fields (preferred)
+  primaryBusyDaysDDMM?: string[];      // DD/MM/YYYY for Thu/Fri/Sat derived from primary closings
+  lastClosingFridayDDMM?: string | null; // DD/MM/YYYY (last closing from ledger)
+  // Backward-compatibility (legacy):
+  primaryTasks?: Array<{
     taskId: string;
     taskName: string;
     startDate: string;                // ISO (clipped to window)
     endDate: string;                  // ISO (clipped to window)
     scheduleId: string;
   }>;
-  mandatoryClosingDates: string[];     // DD/MM/YYYY
+  mandatoryClosingDates: string[];     // DD/MM/YYYY (primary closings)
   optimalClosingDates: string[];       // DD/MM/YYYY
   preferencesInWindow: PreferenceEntry[];
 };
@@ -66,7 +70,11 @@ type PlanningPayload = {
   selectedRange: { start: string; end: string };  // ISO
   window: { start: string; end: string };         // ISO
   fridays: string[];                    // DD/MM/YYYY (window)
-  schedulesUsed: string[];              // primary schedule IDs
+  schedulesUsed: string[];              // primary schedule IDs (legacy; optional)
+  stats?: {
+    updatedAt?: string;
+    perWorker: Record<string, { totalSecondary?: number; closingAccuracyPct?: number | null }>;
+  };
   workers: Record<string, WorkerPayload>; // workerId → payload
 };
 
@@ -133,6 +141,11 @@ export function generateSecondarySchedule(
   const isFriday = (d: Date) => d.getDay() === 5;
   const dateKey = (d: Date) => fmtDDMM(d);
   const hasPrimaryOn = (worker: WorkerPayload, day: Date): boolean => {
+    // Prefer ledger-derived busy days; fallback to legacy primaryTasks
+    const key = dateKey(day);
+    if (Array.isArray(worker.primaryBusyDaysDDMM) && worker.primaryBusyDaysDDMM.length > 0) {
+      return worker.primaryBusyDaysDDMM.includes(key);
+    }
     const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0, 0);
     const dayEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 59, 59, 999);
     return (worker.primaryTasks || []).some((t) => {
@@ -142,6 +155,10 @@ export function generateSecondarySchedule(
     });
   };
   const spansWeekend = (worker: WorkerPayload, friday: Date): boolean => {
+    // Prefer ledger-based check: primary closing on this Friday implies weekend span
+    const fKey = dateKey(friday);
+    if (Array.isArray(worker.mandatoryClosingDates) && worker.mandatoryClosingDates.includes(fKey)) return true;
+    if (Array.isArray(worker.primaryBusyDaysDDMM) && worker.primaryBusyDaysDDMM.includes(fKey)) return true;
     const thu = addDaysLocal(friday, -1);
     const sat = addDaysLocal(friday, +1);
     return (worker.primaryTasks || []).some((t) => {
@@ -164,6 +181,15 @@ export function generateSecondarySchedule(
       if (f >= friday) continue;
       const k = dateKey(f);
       if (assignedClosers[k]?.has(workerId)) { last = f; break; }
+    }
+    // Consult ledger last closing if available
+    if (!last) {
+      const lastDDMM = (payload.workers[workerId]?.lastClosingFridayDDMM || null) as string | null;
+      if (lastDDMM) {
+        const [d, m, y] = lastDDMM.split('/').map(Number);
+        const dt = new Date(y, m - 1, d, 12, 0, 0, 0);
+        if (dt < friday) last = dt;
+      }
     }
     if (!last) {
       const mandatory = payload.workers[workerId]?.mandatoryClosingDates || [];
@@ -223,6 +249,15 @@ export function generateSecondarySchedule(
   const raw = localStorage.getItem(key);
   if (!raw) throw new Error(`Local payload not found for ${key}`);
   const payload: PlanningPayload = JSON.parse(raw);
+  // TTL freshness validation (5 minutes)
+  try {
+    const genAt = payload?.generatedAt ? Date.parse(payload.generatedAt) : 0;
+    if (!genAt || (Date.now() - genAt) > (5 * 60 * 1000)) {
+      throw new Error('Planning cache is stale (>5m). Refresh the date range to regenerate.');
+    }
+  } catch (e) {
+    throw e instanceof Error ? e : new Error('Planning cache freshness validation failed');
+  }
 
   // 2) Build dates for selected range
   const dates: Date[] = [];
@@ -266,14 +301,25 @@ export function generateSecondarySchedule(
     // Prioritize workers whose optimalClosingDates contains this Friday.
     const need = Math.max(0, required - forced.length);
     const chosen: WeekendCloserDecision[] = [];
+    const getStats = (wid: string) => {
+      const s = (payload as any).stats?.perWorker?.[wid] || {};
+      return { totalSecondary: (s.totalSecondary as number) || 0, closingAccuracyPct: (typeof s.closingAccuracyPct === 'number' ? (s.closingAccuracyPct as number) : null) };
+    };
     const optFirst = candidates.filter((c) => c.onOptimal).sort((a, b) => {
       if (a.missed !== b.missed) return a.missed ? -1 : 1;
       if (a.weeksUntilDue !== b.weeksUntilDue) return a.weeksUntilDue - b.weeksUntilDue;
+      // Use accuracy (lower first) then total secondary (lower first)
+      const as = getStats(a.wid); const bs = getStats(b.wid);
+      if ((as.closingAccuracyPct ?? 0) !== (bs.closingAccuracyPct ?? 0)) return (as.closingAccuracyPct ?? 0) - (bs.closingAccuracyPct ?? 0);
+      if ((as.totalSecondary || 0) !== (bs.totalSecondary || 0)) return (as.totalSecondary || 0) - (bs.totalSecondary || 0);
       return a.wid.localeCompare(b.wid);
     });
     const rest = candidates.filter((c) => !c.onOptimal).sort((a, b) => {
       if (a.missed !== b.missed) return a.missed ? -1 : 1;
       if (a.weeksUntilDue !== b.weeksUntilDue) return a.weeksUntilDue - b.weeksUntilDue;
+      const as = getStats(a.wid); const bs = getStats(b.wid);
+      if ((as.closingAccuracyPct ?? 0) !== (bs.closingAccuracyPct ?? 0)) return (as.closingAccuracyPct ?? 0) - (bs.closingAccuracyPct ?? 0);
+      if ((as.totalSecondary || 0) !== (bs.totalSecondary || 0)) return (as.totalSecondary || 0) - (bs.totalSecondary || 0);
       return a.wid.localeCompare(b.wid);
     });
 
@@ -453,8 +499,17 @@ export function generateSecondarySchedule(
           s += (cap - weeklyCnt);
           s += (5 - Math.min(5, totalCnt));
 
-          if (!best || s > best.score || (s === best.score && wid.localeCompare((best as any).wid) < 0)) {
+          if (!best || s > best.score) {
             best = { wid, score: s, breakdown: { pref: pref.preferred ? 2 : 0, scarcity: scarcityBonus, headroom: (cap - weeklyCnt), fairness: (5 - Math.min(5, totalCnt)) } } as any;
+          } else if (s === best.score) {
+            // Tie-breaker with department stats: prefer lower totalSecondary
+            const sA = ((payload as any).stats?.perWorker?.[wid]?.totalSecondary as number) || 0;
+            const sB = ((payload as any).stats?.perWorker?.[(best as any).wid]?.totalSecondary as number) || 0;
+            if (sA !== sB) {
+              if (sA < sB) best = { wid, score: s, breakdown: { pref: pref.preferred ? 2 : 0, scarcity: scarcityBonus, headroom: (cap - weeklyCnt), fairness: (5 - Math.min(5, totalCnt)) } } as any;
+            } else if (wid.localeCompare((best as any).wid) < 0) {
+              best = { wid, score: s, breakdown: { pref: pref.preferred ? 2 : 0, scarcity: scarcityBonus, headroom: (cap - weeklyCnt), fairness: (5 - Math.min(5, totalCnt)) } } as any;
+            }
           }
           considered.push({ wid, score: s, breakdown: { pref: pref.preferred ? 2 : 0, scarcity: scarcityBonus, headroom: (cap - weeklyCnt), fairness: (5 - Math.min(5, totalCnt)) } });
         }
