@@ -55,6 +55,12 @@ export interface TableProps {
   isReadOnly?: boolean;
   currentWorkerId?: string; // For highlighting current worker's cells
   currentWorkerQualifications?: string[]; // For graying out unqualified tasks
+  hideLegend?: boolean; // Hide legend bar (e.g., admin design-only page)
+  showAddRow?: boolean; // Show a "+" row below the last task
+  onAddRowClick?: () => void; // Handler when clicking the add row
+  adminMode?: boolean; // Admin interaction semantics (assignment-focused rendering)
+  disabledDates?: Set<string>; // DD/MM/YYYY keys that should be disabled (worker view)
+  disabledTooltips?: Map<string, string>; // dateKey -> tooltip text for disabled dates
 }
 
 /**
@@ -115,7 +121,13 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
   onCellClick,
   isReadOnly = false,
   currentWorkerId,
-  currentWorkerQualifications = []
+  currentWorkerQualifications = [],
+  hideLegend = false,
+  showAddRow = false,
+  onAddRowClick,
+  adminMode = false,
+  disabledDates,
+  disabledTooltips
 }) => {
   const dateRange = generateDateRange(startDate, endDate);
 
@@ -135,6 +147,12 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
    * ONLY shows color if current worker has set a preference
    */
   const getCellStyle = (cell: CellData | undefined, isWeekend: boolean): string => {
+    // If assigned (admin view), gently highlight assignment regardless of weekend
+    if (cell && cell.workers.some(w => w.status === 'assigned')) {
+      const weekendOverlay = isWeekend ? 'ring-1 ring-blue-500/20' : '';
+      return `bg-blue-600/40 border-blue-400/40 ${weekendOverlay}`;
+    }
+
     // Base weekend tint for empty cells
     if (!cell || cell.workers.length === 0) {
       return isWeekend 
@@ -220,22 +238,34 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
               {dateRange.map((date, dateIndex) => {
                 const key = getCellKey(task.id, date);
                 const cell = cellData.get(key);
-                const isCellDisabled = !isQualified || isReadOnly;
+                const dateKey = formatDate(date);
+                const isDateDisabled = disabledDates?.has(dateKey) || false;
+                const isCellDisabled = adminMode ? isReadOnly : (!isQualified || isReadOnly || isDateDisabled);
                 const isWeekend = isWeekendDay(date);
+                const titleText = isDateDisabled ? (disabledTooltips?.get(dateKey) || undefined) : undefined;
                 
                 return (
-                  <button
+                  <div
                     key={dateIndex}
-                    onClick={() => !isCellDisabled && onCellClick(task.id, date)}
-                    disabled={isCellDisabled}
-                    className={`
-                      rounded-lg p-2 border transition-all duration-200
-                      ${isQualified ? getCellStyle(cell, isWeekend) : (isWeekend ? 'bg-indigo-900/20 border-indigo-700/30' : 'bg-gray-800/30 border-gray-700/30')}
-                      ${!isCellDisabled ? 'cursor-pointer hover:scale-105 hover:shadow-lg' : 'cursor-not-allowed opacity-50'}
-                      flex items-center justify-center
-                    `}
+                    onClick={() => {
+                      if (isCellDisabled && isDateDisabled && titleText) {
+                        try { alert(titleText); } catch {}
+                      }
+                    }}
+                    className="relative"
                   >
-                    {cell && cell.workers.length > 0 && isQualified && (
+                    <button
+                      onClick={() => !isCellDisabled && onCellClick(task.id, date)}
+                      disabled={isCellDisabled}
+                      className={`
+                        rounded-lg p-2 border transition-all duration-200 w-full h-full
+                        ${adminMode ? getCellStyle(cell, isWeekend) : (isQualified ? getCellStyle(cell, isWeekend) : (isWeekend ? 'bg-indigo-900/20 border-indigo-700/30' : 'bg-gray-800/30 border-gray-700/30'))}
+                        ${!isCellDisabled ? 'cursor-pointer hover:scale-105 hover:shadow-lg' : 'cursor-not-allowed opacity-50'}
+                        flex items-center justify-center
+                      `}
+                      title={titleText}
+                    >
+                    {cell && cell.workers.length > 0 && (
                       <div className="text-center w-full px-1">
                         {cell.workers.every(w => w.status === 'blocked') ? (
                           // All blocked - show X
@@ -244,25 +274,33 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
                           // Show worker names (max 3, then "..." or "CurrentWorker...")
                           <div className="text-white font-semibold text-xs leading-tight">
                             {(() => {
-                              const currentWorkerInCell = cell.workers.find(
+                              const assigned = cell.workers.filter(w => w.status === 'assigned');
+                              if (adminMode && assigned.length > 0) {
+                                return assigned[0].workerName.split(' ')[0];
+                              }
+
+                              const currentWorkerInCell = currentWorkerId ? cell.workers.find(
                                 w => w.workerId === currentWorkerId
-                              );
+                              ) : undefined;
                               const preferredWorkers = cell.workers.filter(
                                 w => w.status === 'preferred'
                               );
-                              
+
+                              // Admin view: if more than one preferred, show ellipsis
+                              if (adminMode) {
+                                if (preferredWorkers.length > 1) return '...';
+                                if (preferredWorkers.length === 1) return preferredWorkers[0].workerName.split(' ')[0];
+                                return '';
+                              }
+
                               if (preferredWorkers.length <= 3) {
-                                // Show all names
                                 return preferredWorkers
-                                  .map(w => w.workerName.split(' ')[0]) // First name only
+                                  .map(w => w.workerName.split(' ')[0])
                                   .join(', ');
                               } else {
-                                // More than 3 workers
                                 if (currentWorkerInCell && currentWorkerInCell.status === 'preferred') {
-                                  // Show current worker's name + "..."
                                   return `${currentWorkerInCell.workerName.split(' ')[0]}...`;
                                 } else {
-                                  // Show first 3 + "..."
                                   return preferredWorkers
                                     .slice(0, 3)
                                     .map(w => w.workerName.split(' ')[0])
@@ -277,33 +315,63 @@ const SecondaryTaskTable: React.FC<TableProps> = ({
                     {!isQualified && (
                       <div className="text-gray-600 text-sm">—</div>
                     )}
-                  </button>
+                      {/* Tiny lock for disabled primary-task dates */}
+                      {isDateDisabled && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <span className="text-white/60 text-xs">🔒</span>
+                        </div>
+                      )}
+                    </button>
+                  </div>
                 );
               })}
             </div>
           );
         })}
+        {showAddRow && (
+          <div
+            className="grid gap-1 mb-1"
+            style={{ gridTemplateColumns: `200px repeat(${dateRange.length}, minmax(120px, 1fr))` }}
+          >
+            {/* Add new task button cell */}
+            <button
+              onClick={onAddRowClick}
+              className="bg-gradient-to-br from-purple-600/30 to-indigo-600/30 hover:from-purple-600/40 hover:to-indigo-600/40 backdrop-blur-sm rounded-lg p-3 border border-white/20 flex items-center justify-center text-white font-semibold transition-all duration-200 hover:scale-105"
+            >
+              + הוסף משימה
+            </button>
+            {/* Empty cells to keep grid alignment */}
+            {dateRange.map((_, i) => (
+              <div
+                key={`add-row-${i}`}
+                className="rounded-lg p-2 border bg-slate-800/20 border-slate-600/20"
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Legend */}
-      <div className="mt-6 flex flex-wrap gap-4 justify-center">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-blue-600/80 rounded border border-blue-400/50"></div>
-          <span className="text-white/80 text-sm">משובץ</span>
+      {/* Legend (optional) */}
+      {!hideLegend && (
+        <div className="mt-6 flex flex-wrap gap-4 justify-center">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 bg-blue-600/80 rounded border border-blue-400/50"></div>
+            <span className="text-white/80 text-sm">משובץ</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 bg-green-600/80 rounded border border-green-400/50"></div>
+            <span className="text-white/80 text-sm">מועדף</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 bg-red-600/80 rounded border border-red-400/50"></div>
+            <span className="text-white/80 text-sm">חסום</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 bg-slate-800/50 rounded border border-slate-600/50"></div>
+            <span className="text-white/80 text-sm">ריק</span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-green-600/80 rounded border border-green-400/50"></div>
-          <span className="text-white/80 text-sm">מועדף</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-red-600/80 rounded border border-red-400/50"></div>
-          <span className="text-white/80 text-sm">חסום</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-slate-800/50 rounded border border-slate-600/50"></div>
-          <span className="text-white/80 text-sm">ריק</span>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

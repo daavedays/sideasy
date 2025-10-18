@@ -15,7 +15,10 @@ import {
   onSnapshot,
   Timestamp,
   collection,
-  serverTimestamp
+  serverTimestamp,
+  updateDoc,
+  getDocs,
+  writeBatch
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
@@ -229,6 +232,27 @@ function ensureTaskDefinitionsRealtimeCache(departmentId: string) {
   taskDefsListeners[departmentId] = true;
 }
 
+// ------------------------------------------------------
+// Local cache writer used immediately after definition writes
+// ------------------------------------------------------
+function writeTaskDefsCache(
+  departmentId: string,
+  data: Pick<TaskDefinitions, 'main_tasks' | 'secondary_tasks'>
+): void {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
+  const key = `taskDefs:${departmentId}`;
+  try {
+    const cachePayload = {
+      updatedAtMs: Date.now(),
+      data: {
+        main_tasks: { definitions: data.main_tasks?.definitions || [] },
+        secondary_tasks: { definitions: data.secondary_tasks?.definitions || [] }
+      }
+    };
+    localStorage.setItem(key, JSON.stringify(cachePayload));
+  } catch {}
+}
+
 /**
  * Check if task definitions exist for a department
  * 
@@ -286,6 +310,11 @@ export async function addSecondaryTask(
         definitions: updatedDefinitions
       }
     });
+    // Update local cache immediately
+    writeTaskDefsCache(departmentId, {
+      secondary_tasks: { definitions: updatedDefinitions },
+      main_tasks: currentData.main_tasks
+    });
     
     console.log(`✅ Secondary task added with ID: ${taskId}`);
     return taskId;
@@ -333,6 +362,11 @@ export async function addMainTask(
       main_tasks: {
         definitions: updatedDefinitions
       }
+    });
+    // Update local cache immediately
+    writeTaskDefsCache(departmentId, {
+      main_tasks: { definitions: updatedDefinitions },
+      secondary_tasks: currentData.secondary_tasks
     });
     
     console.log(`✅ Main task added with ID: ${taskId}`);
@@ -383,6 +417,11 @@ export async function updateSecondaryTask(
         definitions: updatedDefinitions
       }
     });
+    // Update local cache immediately
+    writeTaskDefsCache(departmentId, {
+      secondary_tasks: { definitions: updatedDefinitions },
+      main_tasks: currentData.main_tasks
+    });
     
     console.log(`✅ Secondary task updated: ${taskId}`);
   } catch (error) {
@@ -431,6 +470,11 @@ export async function updateMainTask(
         definitions: updatedDefinitions
       }
     });
+    // Update local cache immediately
+    writeTaskDefsCache(departmentId, {
+      main_tasks: { definitions: updatedDefinitions },
+      secondary_tasks: currentData.secondary_tasks
+    });
     
     console.log(`✅ Main task updated: ${taskId}`);
   } catch (error) {
@@ -466,12 +510,131 @@ export async function deleteSecondaryTask(
         definitions: updatedDefinitions
       }
     });
+    // Update local cache immediately
+    writeTaskDefsCache(departmentId, {
+      secondary_tasks: { definitions: updatedDefinitions },
+      main_tasks: currentData.main_tasks
+    });
     
     console.log(`✅ Secondary task deleted: ${taskId}`);
   } catch (error) {
     console.error('Error deleting secondary task:', error);
     throw error;
   }
+}
+
+/**
+ * Delete a secondary task and cascade-remove its qualification from all workers.
+ *
+ * Steps:
+ * 1) Remove the task from taskDefinitions (secondary_tasks.definitions)
+ * 2) For each worker that has this qualification:
+ *    - Update consolidated workers map: departments/{dep}/workers/index
+ *    - Update byWorker doc: departments/{dep}/workers/index/byWorker/{workerId}
+ *
+ * Notes:
+ * - Preferences referencing this task are not removed here to keep the operation light on reads.
+ *   If desired, a follow-up cleaner can prune preferences where taskId === deleted task.
+ */
+export async function deleteSecondaryTaskWithCascade(
+  departmentId: string,
+  taskId: string
+): Promise<{ affectedWorkers: number }> {
+  // 1) Remove from task definitions first
+  await deleteSecondaryTask(departmentId, taskId);
+
+  // 2) Load consolidated workers map
+  const mapRef = doc(db, 'departments', departmentId, 'workers', 'index');
+  const mapSnap = await getDoc(mapRef);
+  if (!mapSnap.exists()) {
+    return { affectedWorkers: 0 };
+  }
+
+  const mapData = mapSnap.data() as any;
+  const workersMap = (mapData?.workers || {}) as Record<string, any>;
+
+  const updatePayload: Record<string, any> = {};
+  const byWorkerUpdates: Array<{ workerId: string; qualifications: string[] }> = [];
+
+  Object.keys(workersMap).forEach((workerId) => {
+    const entry = workersMap[workerId] || {};
+    const quals: string[] = Array.isArray(entry.qualifications) ? entry.qualifications : [];
+    if (!quals.includes(taskId)) return;
+    const filtered = quals.filter((q) => String(q) !== String(taskId));
+    updatePayload[`workers.${workerId}.qualifications`] = filtered;
+    byWorkerUpdates.push({ workerId, qualifications: filtered });
+  });
+
+  // 3) Update the consolidated map in a single doc update (if there are changes)
+  if (Object.keys(updatePayload).length > 0) {
+    await updateDoc(mapRef, { ...updatePayload, updatedAt: serverTimestamp() });
+  }
+
+  // 4) Update byWorker docs in batches (max ~500 writes per batch → use 400 for safety)
+  const BATCH_SIZE = 400;
+  for (let i = 0; i < byWorkerUpdates.length; i += BATCH_SIZE) {
+    const chunk = byWorkerUpdates.slice(i, i + BATCH_SIZE);
+    const batch = writeBatch(db);
+    chunk.forEach(({ workerId, qualifications }) => {
+      const ref = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+      batch.set(ref, { qualifications, updatedAt: serverTimestamp() }, { merge: true });
+    });
+    await batch.commit();
+  }
+
+  return { affectedWorkers: byWorkerUpdates.length };
+}
+
+/**
+ * Prune preferences that reference deleted secondary tasks.
+ *
+ * For each byWorker document, remove any preference entries where
+ * preference.taskId is not null and not in the current set of secondary task IDs.
+ * Blocked-day entries with taskId === null are preserved.
+ */
+export async function prunePreferencesReferencingDeletedSecondaryTasks(
+  departmentId: string
+): Promise<{ affectedWorkers: number; removedEntries: number }> {
+  // Load current valid secondary task IDs
+  const taskDefsRef = doc(db, 'departments', departmentId, 'taskDefinitions', 'config');
+  const defsSnap = await getDoc(taskDefsRef);
+  const validIds = new Set<string>();
+  if (defsSnap.exists()) {
+    const data = defsSnap.data() as any;
+    const defs: any[] = data?.secondary_tasks?.definitions || [];
+    defs.forEach((d: any) => validIds.add(String(d.id)));
+  }
+
+  // Iterate all byWorker docs
+  const byWorkerCol = collection(db, 'departments', departmentId, 'workers', 'index', 'byWorker');
+  const snap = await getDocs(byWorkerCol);
+
+  const updates: Array<{ workerId: string; preferences: Array<{ date: any; taskId: string | null; status?: 'preferred' | 'blocked' }> }> = [];
+  let removedTotal = 0;
+  snap.forEach((docSnap) => {
+    const wid = docSnap.id;
+    const data = docSnap.data() as any;
+    const prefs = (data?.preferences || []) as Array<{ date: Timestamp; taskId: string | null; status?: 'preferred' | 'blocked' }>;
+    const filtered = prefs.filter((p) => p.taskId === null || validIds.has(String(p.taskId)));
+    if (filtered.length !== prefs.length) {
+      removedTotal += (prefs.length - filtered.length);
+      updates.push({ workerId: wid, preferences: filtered });
+    }
+  });
+
+  // Batch writes in chunks
+  const BATCH_SIZE = 400;
+  for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+    const chunk = updates.slice(i, i + BATCH_SIZE);
+    const batch = writeBatch(db);
+    chunk.forEach(({ workerId, preferences }) => {
+      const ref = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+      batch.set(ref, { preferences, updatedAt: serverTimestamp() }, { merge: true });
+    });
+    await batch.commit();
+  }
+
+  return { affectedWorkers: updates.length, removedEntries: removedTotal };
 }
 
 /**
@@ -500,6 +663,11 @@ export async function deleteMainTask(
       main_tasks: {
         definitions: updatedDefinitions
       }
+    });
+    // Update local cache immediately
+    writeTaskDefsCache(departmentId, {
+      main_tasks: { definitions: updatedDefinitions },
+      secondary_tasks: currentData.secondary_tasks
     });
     
     console.log(`✅ Main task deleted: ${taskId}`);

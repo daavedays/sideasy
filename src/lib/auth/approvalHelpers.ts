@@ -20,7 +20,6 @@ import { db } from '../../config/firebase';
 import { UserData } from './authHelpers';
 import { initializeDepartmentCollections } from '../firestore/initializeDepartment';
 import { createWorkerDocument } from '../firestore/workers';
-import { ensureWorkersIndex, upsertWorkerIndexEntry } from '../firestore/workersIndex';
 
 /**
  * Approve a user
@@ -139,20 +138,7 @@ export async function approveUser(
         // Don't fail the approval if worker doc creation fails
       }
 
-      // Step 5: Ensure workersIndex exists and upsert initial entry for this worker
-      try {
-        await ensureWorkersIndex(finalDepartmentId);
-        await upsertWorkerIndexEntry(finalDepartmentId, userId, {
-          lastClosingDate: null,
-          primaryTasksMap: [],
-          optimalClosingDates: [],
-          preferences: [],
-          score: 0
-        });
-      } catch (indexError) {
-        console.warn('Failed to initialize workersIndex entry:', indexError);
-        // Non-fatal; index can be rebuilt lazily
-      }
+      
     }
 
     return {

@@ -178,16 +178,7 @@ async function processWorkerClosingSchedule(
       console.warn(`  ⚠️ Alerts for ${workerName}:`, result.userAlerts);
     }
     
-    // Update workersIndex optimalClosingDates only for Fridays in this schedule
-    const { setOptimalClosingDatesForFridays } = await import('./workersIndex');
-    const { formatDateDDMMYYYY } = await import('../utils/dateUtils');
-    const fridayKeys = fridayDates.map(d => formatDateDDMMYYYY(d));
-    await setOptimalClosingDatesForFridays(
-      departmentId,
-      workerId,
-      fridayKeys,
-      result.optimalDates
-    );
+    
     
     console.log(`  ✅ ${workerName}: ${mandatoryDates.length} mandatory + ${result.optimalDates.length} optimal dates`);
     return true;

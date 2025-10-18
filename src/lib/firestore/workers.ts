@@ -7,6 +7,9 @@
  * ⚠️ CRITICAL: All changes to synced fields MUST update both collections!
  * Synced fields: firstName, lastName, email, role, isOfficer, activity
  * Worker-only fields: qualifications, מחלקה (sub-department), preferences, tasks, statistics
+ *
+ * byWorker mirror: identity and role context (firstName, lastName, email, role, isOfficer, activity)
+ * are mirrored for convenience and MUST remain consistent with users + workers map.
  * 
  * Location: src/lib/firestore/workers.ts
  */
@@ -25,7 +28,6 @@ import {
   increment
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { setWorkerClosingInterval } from './workersIndex';
 
 // ============================================================================
 // TYPES
@@ -262,8 +264,7 @@ export async function createWorkerDocument(
       closingInterval: 0
     } as Partial<WorkerMapEntry>);
 
-    // Initialize closingInterval in workersIndex entry as well
-    await setWorkerClosingInterval(departmentId, workerId, 0);
+    
 
     // Create per-worker combined document under workers/index/byWorker/{workerId}
     // This document will store worker-specific assignments and preferences for efficient lookups
@@ -287,6 +288,7 @@ export async function createWorkerDocument(
         primaryTasksMap: [], // Array<{ startDate: Timestamp; endDate: Timestamp; taskId: string; taskName: string; scheduleId?: string }>
         secondaryTaskDates: [], // Array<{ date: Timestamp; taskId: string }>
         preferences: [], // Array<{ date: Timestamp; taskId: string | null }>
+        closingHistory: [], // Array<ClosingHistoryEntry> (initialized empty)
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       },
@@ -376,16 +378,41 @@ export async function updateWorkerWithSync(
       await upsertWorkersMapEntry(departmentId, workerId, mapUpdates);
     }
 
-    // Keep workersIndex.closingInterval in sync
-    if (updates.closingInterval !== undefined) {
-      await setWorkerClosingInterval(departmentId, workerId, updates.closingInterval);
+    // Mirror identity/role fields and worker-only fields into the quick-access byWorker document
+    const hasAnySyncedChanges =
+      updates.firstName !== undefined ||
+      updates.lastName !== undefined ||
+      updates.email !== undefined ||
+      updates.role !== undefined ||
+      updates.isOfficer !== undefined ||
+      updates.activity !== undefined;
+
+    const hasWorkerOnlyChanges =
+      updates.qualifications !== undefined ||
+      updates.unit !== undefined ||
+      updates.closingInterval !== undefined;
+
+    if (hasAnySyncedChanges || hasWorkerOnlyChanges) {
+      const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+      const byWorkerPayload: any = { updatedAt: timestamp };
+
+      // Synced fields mirrored for convenience
+      if (updates.firstName !== undefined) byWorkerPayload.firstName = updates.firstName;
+      if (updates.lastName !== undefined) byWorkerPayload.lastName = updates.lastName;
+      if (updates.email !== undefined) byWorkerPayload.email = updates.email;
+      if (updates.role !== undefined) byWorkerPayload.role = updates.role;
+      if (updates.isOfficer !== undefined) byWorkerPayload.isOfficer = updates.isOfficer;
+      if (updates.activity !== undefined) byWorkerPayload.activity = updates.activity;
+
+      // Worker-only fields
+      if (updates.qualifications !== undefined) byWorkerPayload.qualifications = updates.qualifications;
+      if (updates.unit !== undefined) byWorkerPayload.unit = updates.unit;
+      if (updates.closingInterval !== undefined) byWorkerPayload.closingInterval = updates.closingInterval;
+
+      await setDoc(byWorkerRef, byWorkerPayload, { merge: true });
     }
 
-    // Sync qualifications into workersIndex for quick reads
-    if (updates.qualifications !== undefined) {
-      const { upsertWorkerIndexEntry } = await import('./workersIndex');
-      await upsertWorkerIndexEntry(departmentId, workerId, { qualifications: updates.qualifications as any });
-    }
+    
 
     return {
       success: true,
@@ -455,6 +482,12 @@ export async function changeWorkerRole(
     // Mirror role change in consolidated workers map
     await upsertWorkersMapEntry(departmentId, workerId, { role: newRole } as Partial<WorkerMapEntry>);
 
+    // Mirror role change in byWorker document
+    {
+      const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+      await setDoc(byWorkerRef, { role: newRole, updatedAt: timestamp }, { merge: true });
+    }
+
     return {
       success: true,
       message: `Role changed from ${currentRole} to ${newRole}`
@@ -515,6 +548,12 @@ export async function softDeleteWorker(
 
     // Mirror activity change in consolidated workers map
     await upsertWorkersMapEntry(departmentId, workerId, { activity: 'deleted' } as Partial<WorkerMapEntry>);
+
+    // Mirror activity change in byWorker document
+    {
+      const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', workerId);
+      await setDoc(byWorkerRef, { activity: 'deleted', updatedAt: timestamp }, { merge: true });
+    }
 
     // TODO: Remove from future schedules (when schedules are implemented)
 

@@ -217,7 +217,7 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
       </div>
 
       {/* Legend */}
-      <div className="mt-6 flex flex-wrap gap-4 justify-center" dir="rtl">
+      {/* <div className="mt-6 flex flex-wrap gap-4 justify-center" dir="rtl">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-blue-600/80 rounded border-2 border-blue-400"></div>
           <span className="text-white/80 text-sm">משימה משובצת</span>
@@ -230,7 +230,7 @@ const PrimaryTaskTable: React.FC<PrimaryTaskTableProps> = ({
           <div className="w-6 h-6 bg-slate-800/50 rounded border border-slate-600/50"></div>
           <span className="text-white/80 text-sm">ריק</span>
         </div>
-      </div>
+      </div> */}
     </div>
   );
 };

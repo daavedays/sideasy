@@ -9,38 +9,36 @@
  */
 
 /**
- * Color palette for task assignments
- * Carefully selected for good contrast, readability, and visual appeal
+ * Glassmorphism-friendly pastel palette (light, soft, high legibility)
+ * Used as a fallback if we don't generate via HSL.
  */
 const TASK_COLOR_PALETTE = [
-  // Blues
-  '#3B82F6', // blue-500
-  '#06B6D4', // cyan-500
-  '#0EA5E9', // sky-500
-  
-  // Purples
-  '#8B5CF6', // violet-500
-  '#A855F7', // purple-500
-  '#D946EF', // fuchsia-500
-  
-  // Greens
-  '#10B981', // emerald-500
-  '#14B8A6', // teal-500
-  '#22C55E', // green-500
-  
-  // Oranges/Reds
-  '#F59E0B', // amber-500
-  '#EF4444', // red-500
-  '#F97316', // orange-500
-  
-  // Pinks
-  '#EC4899', // pink-500
-  '#FB7185', // rose-500
-  
+  // Pastel Blues / Cyans
+  '#A7C5FF', '#AEE9FF', '#B8E1FF', '#C7D2FE', '#BFE3FF',
+  // Pastel Purples
+  '#D5C6FF', '#E0C3FC', '#CBB2FF', '#E8D5FF', '#D9C2FF',
+  // Pastel Greens / Teals
+  '#BFF7D0', '#C3F0E6', '#C8F8DC', '#BDE6E3', '#D1F5E0',
+  // Pastel Oranges / Yellows
+  '#FFE0B2', '#FFE8A3', '#FFD8B1', '#FFE6C7', '#FFE3A8',
+  // Pastel Reds / Pinks / Roses
+  '#FFC7D1', '#FFCDD5', '#FFD1E8', '#FFBFD6', '#FFCFE1',
   // Others
-  '#6366F1', // indigo-500
-  '#84CC16', // lime-500
+  '#CFF1FF', '#D7F7FF', '#D2F4EA', '#E3F2FF', '#E6E9FF',
+  '#D8F0FF', '#EFD9FF', '#F1E0FF', '#FBE0FF', '#F9E6FF'
 ];
+
+/**
+ * Convert HSL to HEX (pastel generation helper)
+ */
+const hslToHex = (h: number, s: number, l: number): string => {
+  s /= 100; l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = (x: number) => Math.round(255 * x).toString(16).padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+};
 
 /**
  * Generate a consistent color for a task ID using hash function
@@ -50,18 +48,26 @@ const TASK_COLOR_PALETTE = [
  * @returns Hex color string (e.g., "#3B82F6")
  */
 export const generateTaskColor = (taskId: string): string => {
-  // Simple hash function for consistent color selection
+  // Stable hash from id
   let hash = 0;
   for (let i = 0; i < taskId.length; i++) {
-    const char = taskId.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
+    hash = (hash << 5) - hash + taskId.charCodeAt(i);
+    hash |= 0;
   }
-  
-  // Use absolute value and modulo to get palette index
-  const index = Math.abs(hash) % TASK_COLOR_PALETTE.length;
-  
-  return TASK_COLOR_PALETTE[index];
+
+  // Generate a pastel color using HSL for wide variance and glassmorph look
+  // Hue from 0..359 based on hash, Saturation 65-75, Lightness 78-85
+  const hue = Math.abs(hash) % 360;
+  const sat = 35; // slightly stronger saturation for readability
+  const lig = 55; // darker pastel for better text contrast
+  const pastelHex = hslToHex(hue, sat, lig);
+
+  // Safety: if something goes wrong, fallback to palette
+  if (!/^#[0-9a-fA-F]{6}$/.test(pastelHex)) {
+    const index = Math.abs(hash) % TASK_COLOR_PALETTE.length;
+    return TASK_COLOR_PALETTE[index];
+  }
+  return pastelHex;
 };
 
 /**
@@ -72,7 +78,7 @@ export const generateTaskColor = (taskId: string): string => {
  */
 export const getTaskCellBackground = (color: string): React.CSSProperties => {
   return {
-    backgroundColor: `${color}CC`, // 80% opacity
+    backgroundColor: `${color}CC`, // ~80% opacity for glassmorphism and readability
     borderColor: `${color}`,
   };
 };

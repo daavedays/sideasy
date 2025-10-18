@@ -20,7 +20,7 @@
 import React, { useState } from 'react';
 import { MainTask, Assignment } from '../../types/primarySchedule.types';
 import { generateTaskColor, CUSTOM_TASK_COLOR, getContrastTextColor } from '../../lib/utils/colorUtils';
-import { calculateTaskEndDate, getHebrewDayName } from '../../lib/utils/weekUtils';
+import { calculateTaskEndDate, getHebrewDayName, dayStringToIndex } from '../../lib/utils/weekUtils';
 import Modal from '../ui/Modal';
 import Input from '../ui/Input';
 import Button from '../ui/Button';
@@ -109,7 +109,16 @@ const PrimaryTaskCellModal: React.FC<PrimaryTaskCellModalProps> = ({
     if (!selectedTask) return;
 
     const durationDays = getTaskDuration(selectedTask);
+
+    // Align start date to the task's configured start_day within (or after) the selected week
+    const desiredStartDayIndex = dayStringToIndex(selectedTask.start_day);
+
+    // Base on the selected week's start date
     const startDate = new Date(weekStartDate);
+    const weekStartDayIndex = startDate.getDay();
+    const offsetDays = (desiredStartDayIndex - weekStartDayIndex + 7) % 7;
+    startDate.setDate(startDate.getDate() + offsetDays);
+
     // End date = start date + duration - 1 (to include the start day)
     const endDate = calculateTaskEndDate(startDate, durationDays - 1);
 
@@ -207,7 +216,7 @@ const PrimaryTaskCellModal: React.FC<PrimaryTaskCellModalProps> = ({
         {/* Worker and Week Info */}
         <div className="bg-gradient-to-br from-blue-600/20 to-cyan-600/20 backdrop-blur-sm rounded-xl p-4 border border-white/10">
           <div className="text-white font-semibold mb-2">
-           <span className="text-cyan-300">{workerName}</span>
+            <span className="text-white">{workerName}</span>
           </div>
           <div className="text-white/80 text-sm">
             שבוע {weekNumber}: {getHebrewDayName(weekStartDate)} {weekStartDate.toLocaleDateString('he-IL')} - {getHebrewDayName(weekEndDate)} {weekEndDate.toLocaleDateString('he-IL')}
@@ -222,14 +231,18 @@ const PrimaryTaskCellModal: React.FC<PrimaryTaskCellModalProps> = ({
         {/* Tab Selection */}
         <div className="flex gap-2">
           <Button
+            variant="secondary"
+            disabled={!isCustomTask}
             onClick={() => setIsCustomTask(false)}
-            className={`flex-1 ${!isCustomTask ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500' : 'bg-slate-700 hover:bg-slate-600'}`}
+            className={`flex-1 ${!isCustomTask ? 'bg-white/20 border border-white/40 cursor-default' : 'bg-white/10 hover:bg-white/20 border border-white/20'}`}
           >
             משימות קבועות
           </Button>
           <Button
+            variant="secondary"
+            disabled={isCustomTask}
             onClick={() => setIsCustomTask(true)}
-            className={`flex-1 ${isCustomTask ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500' : 'bg-slate-700 hover:bg-slate-600'}`}
+            className={`flex-1 ${isCustomTask ? 'bg-white/20 border border-white/40 cursor-default' : 'bg-white/10 hover:bg-white/20 border border-white/20'}`}
           >
             משימה מותאמת אישית
           </Button>
@@ -237,14 +250,14 @@ const PrimaryTaskCellModal: React.FC<PrimaryTaskCellModalProps> = ({
 
         {/* Predefined Tasks List */}
         {!isCustomTask && (
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-[420px] overflow-y-auto p-2">
             <h3 className="text-white font-semibold mb-3">בחר משימה:</h3>
             {taskDefinitions.length === 0 ? (
               <div className="text-white/60 text-center py-8">
                 אין משימות זמינות. אנא הוסף משימות בהגדרות המחלקה.
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 {taskDefinitions.map((task) => {
                   const taskColor = generateTaskColor(task.id);
                   const textColor = getContrastTextColor(taskColor);
@@ -255,16 +268,16 @@ const PrimaryTaskCellModal: React.FC<PrimaryTaskCellModalProps> = ({
                       key={task.id}
                       onClick={() => handleTaskSelect(task)}
                       className={`
-                        p-2 rounded-lg border-2 transition-all duration-200
+                        p-4 rounded-xl border-2 transition-all duration-200 backdrop-blur-sm
                         hover:scale-105 hover:shadow-md
                         ${isSelected ? 'border-white scale-105' : 'border-transparent'}
                       `}
                       style={{
-                        backgroundColor: `${taskColor}CC`,
+                        backgroundColor: `${taskColor}B3`,
                       }}
                     >
                       <div className={`text-center ${textColor}`}>
-                        <div className="font-semibold text-sm">{task.name}</div>
+                        <div className="font-semibold text-sm md:text-base">{task.name}</div>
                       </div>
                     </button>
                   );
@@ -371,18 +384,20 @@ const PrimaryTaskCellModal: React.FC<PrimaryTaskCellModalProps> = ({
           {!isCustomTask && selectedTask && (
             <Button
               onClick={handleSavePredefinedTask}
-              className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500"
+              variant="attention"
+              className="flex-1"
             >
-              שמור משימה
+              בחר
             </Button>
           )}
 
           {isCustomTask && customTaskName.trim() && customStartDate && customEndDate && (
             <Button
               onClick={handleSaveCustomTask}
-              className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500"
+              variant="attention"
+              className="flex-1"
             >
-              שמור משימה מותאמת
+              בחר
             </Button>
           )}
 

@@ -21,7 +21,9 @@ import {
   updateSecondaryTask, 
   updateMainTask, 
   deleteSecondaryTask, 
-  deleteMainTask 
+  deleteMainTask,
+  deleteSecondaryTaskWithCascade,
+  prunePreferencesReferencingDeletedSecondaryTasks
 } from '../../lib/firestore/taskDefinitions';
 import type { SecondaryTaskDefinition, MainTaskDefinition } from '../../lib/firestore/taskDefinitions';
 
@@ -200,10 +202,21 @@ const OwnerAndAdminSettings: React.FC<Props> = ({ backUrl }) => {
         }
       }
 
-      // Check for deleted secondary tasks
+      // Check for deleted secondary tasks (with cascade + auto-prune + warning if required qualification)
       for (const original of originalSecondaryTasks) {
         if (!secondaryTasks.find(t => t.id === original.id)) {
-          await deleteSecondaryTask(departmentId, original.id);
+          const requiresQual = !!original.requiresQualification;
+          if (requiresQual) {
+            const ok = window.confirm(`אזהרה: מחיקת המשימה "${original.name}" תסיר את ההסמכה הזו מכל העובדים שיש להם אותה, ותעדכן את המסמכים הרלוונטיים. האם להמשיך?`);
+            if (!ok) continue;
+          }
+          // Cascade removal (also updates workers map + byWorker docs)
+          const res = await deleteSecondaryTaskWithCascade(departmentId, original.id);
+          if (requiresQual) {
+            try { alert(`ההסמכה הוסרה מ-${res.affectedWorkers} עובדים`); } catch {}
+          }
+          // Always prune dangling preferences after deletion
+          await prunePreferencesReferencingDeletedSecondaryTasks(departmentId);
         }
       }
 
@@ -291,13 +304,65 @@ const OwnerAndAdminSettings: React.FC<Props> = ({ backUrl }) => {
     ));
   };
 
-  const handleDeleteSecondary = (id: string, name: string) => {
-    if (window.confirm(`האם אתה בטוח שברצונך למחוק את '${name}'?`)) {
-      setSecondaryTasks(secondaryTasks.filter(task => task.id !== id));
+  const handleDeleteSecondary = async (id: string, name: string) => {
+    const task = secondaryTasks.find(t => t.id === id);
+    const isExisting = id && !id.startsWith('temp_');
+    const requiresQual = !!task?.requiresQualification;
+
+    // For new (unsaved) tasks → local remove only
+    if (!isExisting) {
+      if (window.confirm(`האם אתה בטוח שברצונך למחוק את '${name}'?`)) {
+        setSecondaryTasks(secondaryTasks.filter(t => t.id !== id));
+        if (editingSecondaryId === id) {
+          setEditingSecondaryId(null);
+          setIsAddingSecondary(false);
+        }
+      }
+      return;
+    }
+
+    if (!departmentId) return;
+
+    // Stronger warning for qualification-required tasks
+    const message = requiresQual
+      ? `אזהרה קריטית:\n\nמחיקת המשימה "${name}" תסיר את ההסמכה הזו מכל העובדים שיש להם אותה.\nבנוסף, ננקה העדפות שמפנות למשימה זו.\n\nהאם להמשיך?`
+      : `מחיקת המשימה "${name}" תנקה העדפות שמפנות למשימה זו.\n\nהאם להמשיך?`;
+
+    const ok = window.confirm(message);
+    if (!ok) return;
+
+    try {
+      if (requiresQual) {
+        const res = await deleteSecondaryTaskWithCascade(departmentId, id);
+        try { alert(`ההסמכה הוסרה מ-${res.affectedWorkers} עובדים`); } catch {}
+      } else {
+        await deleteSecondaryTask(departmentId, id);
+      }
+
+      // Always prune dangling preferences after any secondary task deletion
+      await prunePreferencesReferencingDeletedSecondaryTasks(departmentId);
+
+      // Update local state and originals by reloading from Firestore
+      const updated = await getTaskDefinitions(departmentId);
+      if (updated) {
+        setOriginalSecondaryTasks(updated.secondary_tasks.definitions);
+        setSecondaryTasks(updated.secondary_tasks.definitions);
+        // keep main tasks as-is
+      } else {
+        setOriginalSecondaryTasks([]);
+        setSecondaryTasks([]);
+      }
+
+      // Clear editing state if needed
       if (editingSecondaryId === id) {
         setEditingSecondaryId(null);
         setIsAddingSecondary(false);
       }
+
+      setMessage({ type: 'success', text: 'המשימה נמחקה וניקינו הפניות לא תקפות' });
+    } catch (e) {
+      console.error('מחיקת משימה נכשלה', e);
+      setMessage({ type: 'error', text: 'מחיקה נכשלה. נסה שוב.' });
     }
   };
 
@@ -522,6 +587,7 @@ const OwnerAndAdminSettings: React.FC<Props> = ({ backUrl }) => {
                     ))}
                   </div>
                 )}
+                {/* Pruning now runs automatically after deletions; no manual button */}
               </div>
             </div>
           )}

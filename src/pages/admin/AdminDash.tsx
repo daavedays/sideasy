@@ -9,13 +9,12 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, collection, query, where, onSnapshot, getCountFromServer } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../../config/firebase';
-import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
+// import { REALTIME_LISTENERS_ENABLED } from '../../config/appConfig';
 import { UserData } from '../../lib/auth/authHelpers';
 import Background from '../../components/layout/Background';
-import Header from '../../components/layout/Header';
 
 interface DepartmentData {
   departmentId: string;
@@ -30,7 +29,6 @@ const AdminDash: React.FC = () => {
   const navigate = useNavigate();
   const [userData, setUserData] = useState<UserData | null>(null);
   const [departmentData, setDepartmentData] = useState<DepartmentData | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -66,48 +64,9 @@ const AdminDash: React.FC = () => {
     fetchData();
   }, []);
 
-  // Real-time listener for pending approvals (workers for this department)
-  // [RT-LISTENER] query(users where status=='pending' AND departmentId==X AND role=='worker') – ספירת עובדים ממתינים לאישור בזמן אמת
-  // [RT-TOGGLE] שימוש ב-onSnapshot רק כשהדגל פעיל; אחרת שימוש בספירה חד-פעמית (חיסכון בקריאות)
-  useEffect(() => {
-    if (!userData?.departmentId) return;
-
-    const q = query(
-      collection(db, 'users'),
-      where('status', '==', 'pending'),
-      where('departmentId', '==', userData.departmentId),
-      where('role', '==', 'worker')
-    );
-    let unsubscribe = () => {};
-    if (REALTIME_LISTENERS_ENABLED) {
-      unsubscribe = onSnapshot(q, (snapshot) => {
-        setPendingCount(snapshot.size);
-      }, (error) => {
-        console.error('Error fetching pending users:', error);
-      });
-    } else {
-      (async () => {
-        try {
-          const snap = await getCountFromServer(q);
-          setPendingCount(snap.data().count);
-        } catch (e) {
-          console.error('Error counting pending users:', e);
-        }
-      })();
-    }
-
-    return () => unsubscribe();
-  }, [userData?.departmentId]);
+  // ספירת אישורים ממתינים הועברה ל-Header הגלובלי
 
   const navigationCards = [
-    {
-      title: 'ממתינים לאישור',
-      description: 'אשר או דחה עובדים חדשים',
-      icon: '✋',
-      badge: pendingCount > 0 ? `${pendingCount}` : null,
-      onClick: () => navigate('/admin/pending-approvals'),
-      color: 'from-purple-600 to-pink-600'
-    },
     {
       title: 'תורנות ראשית',
       description: 'יצירה ועריכה של לוח משמרות ראשי',
@@ -119,7 +78,7 @@ const AdminDash: React.FC = () => {
       title: 'סידור עבודה',
       description: 'צור וערוך סידורי עבודה',
       icon: '📋',
-      onClick: () => alert('בקרוב!'),
+      onClick: () => navigate('/admin/work-schedule'),
       color: 'from-rose-600 to-orange-600'
     },
     {
@@ -166,18 +125,50 @@ const AdminDash: React.FC = () => {
   return (
     <div dir="rtl" className="relative flex-1 min-h-screen">
       <Background singleImage="/images/image_1.png" />
-      <Header />
+      
       
       <div className="relative z-10 min-h-screen py-8 pt-24">
         <div className="container mx-auto px-4">
           {/* Welcome Header */}
           <div className="mb-8">
             <h1 className="text-5xl font-bold text-white drop-shadow-lg mb-2">
-              שלום, {userData?.firstName}!
+              שלום, {userData?.firstName}
             </h1>
             <p className="text-xl text-white/80">
               ברוך הבא למחלקת {departmentData?.name || userData?.departmentName}
             </p>
+          </div>
+
+          {/* Navigation Cards (moved above department info) */}
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold text-white mb-4">מה תרצה לעשות?</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+              {navigationCards.map((card, index) => (
+                <button
+                  key={index}
+                  onClick={card.onClick}
+                  className="relative bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 hover:bg-white/15 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-right group"
+                >
+                  {/* Icon */}
+                  <div className="text-5xl md:text-6xl mb-4 group-hover:scale-110 transition-transform">
+                    {card.icon}
+                  </div>
+
+                  {/* Title */}
+                  <h3 className="text-xl md:text-2xl font-bold text-white mb-2">
+                    {card.title}
+                  </h3>
+
+                  {/* Description */}
+                  <p className="text-sm md:text-base text-white/70">
+                    {card.description}
+                  </p>
+
+                  {/* Gradient Border */}
+                  <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${card.color} opacity-0 group-hover:opacity-20 transition-opacity pointer-events-none`} />
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Department Info Card */}
@@ -208,45 +199,6 @@ const AdminDash: React.FC = () => {
             </div>
           </div>
 
-          {/* Navigation Cards */}
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold text-white mb-4">מה תרצה לעשות?</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
-              {navigationCards.map((card, index) => (
-                <button
-                  key={index}
-                  onClick={card.onClick}
-                  className="relative bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 hover:bg-white/15 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-right group"
-                >
-                  {/* Badge */}
-                  {card.badge && (
-                    <div className="absolute top-4 left-4 bg-red-500 text-white text-sm font-bold rounded-full w-8 h-8 flex items-center justify-center shadow-lg">
-                      {card.badge}
-                    </div>
-                  )}
-
-                  {/* Icon */}
-                  <div className="text-5xl md:text-6xl mb-4 group-hover:scale-110 transition-transform">
-                    {card.icon}
-                  </div>
-
-                  {/* Title */}
-                  <h3 className="text-xl md:text-2xl font-bold text-white mb-2">
-                    {card.title}
-                  </h3>
-
-                  {/* Description */}
-                  <p className="text-sm md:text-base text-white/70">
-                    {card.description}
-                  </p>
-
-                  {/* Gradient Border */}
-                  <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${card.color} opacity-0 group-hover:opacity-20 transition-opacity pointer-events-none`} />
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Quick Stats */}
           <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 mb-8">
             <h2 className="text-2xl font-bold text-white mb-6">סיכום מהיר</h2>
@@ -268,6 +220,16 @@ const AdminDash: React.FC = () => {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Dashboard Footer: quick links not in cards */}
+      <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 mb-8">
+        <h2 className="text-xl font-bold text-white mb-4">קיצורי דרך</h2>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <button onClick={() => navigate('/admin/pending-approvals')} className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20">אישורים ממתינים</button>
+          <button onClick={() => navigate('/admin/primary-tasks/table-view')} className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20">טבלת תורנות ראשית</button>
+          <button onClick={() => navigate('/admin/settings')} className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20">הגדרות מחלקה</button>
         </div>
       </div>
     </div>

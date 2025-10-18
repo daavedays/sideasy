@@ -35,6 +35,7 @@ import {
   saveScheduleWithWorkerUpdates,
   getScheduleById,
   getScheduleAssignments,
+  deleteSchedule,
 } from '../../lib/firestore/primarySchedules';
 
 interface LocationState {
@@ -64,12 +65,16 @@ const PrimaryTasksTableView: React.FC = () => {
   const [taskDefinitions, setTaskDefinitions] = useState<MainTask[]>([]);
   const [scheduleYear, setScheduleYear] = useState<number | undefined>(undefined);
   const [includeAdmins, setIncludeAdmins] = useState(false);
+  // Filter: only show workers with closingInterval != 0 (role === 'worker')
+  const [filterClosingWorkersOnly, setFilterClosingWorkersOnly] = useState(false);
+  const [workersMeta, setWorkersMeta] = useState<Map<string, { closingInterval: number; role: 'owner' | 'admin' | 'worker' }>>(new Map());
 
   // Change Tracking
   const [originalAssignments, setOriginalAssignments] = useState<Map<string, Assignment>>(new Map());
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isCalculatingClosing, setIsCalculatingClosing] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -102,7 +107,7 @@ const PrimaryTasksTableView: React.FC = () => {
     const calculatedWeeks = calculateWeeksFromDateRange(startDateObj, endDateObj);
     setWeeks(calculatedWeeks);
     setScheduleYear(getYear(startDateObj));
-    setIncludeAdmins(state.includeAdmins);
+    setIncludeAdmins(!!state.includeAdmins);
     
     // Set schedule ID if editing existing schedule OR if we already saved one
     // Priority: 1. Already saved (ref), 2. From location state, 3. undefined (new schedule)
@@ -154,6 +159,7 @@ const PrimaryTasksTableView: React.FC = () => {
         const mapSnap = await getDoc(mapRef);
         const workersData: Worker[] = [];
         const adminsData: Worker[] = [];
+        const meta = new Map<string, { closingInterval: number; role: 'owner' | 'admin' | 'worker' }>();
 
         if (mapSnap.exists()) {
           const data = mapSnap.data() as any;
@@ -169,6 +175,8 @@ const PrimaryTasksTableView: React.FC = () => {
               role: entry.role,
               isActive: entry.activity === 'active',
             };
+            const closingInterval: number = typeof entry.closingInterval === 'number' ? entry.closingInterval : 0;
+            meta.set(entry.workerId, { closingInterval, role: entry.role });
             if (entry.role === 'worker') {
               workersData.push(worker);
             } else if (entry.role === 'admin' || entry.role === 'owner') {
@@ -179,6 +187,7 @@ const PrimaryTasksTableView: React.FC = () => {
 
         setWorkers(workersData);
         setAdmins(adminsData);
+        setWorkersMeta(meta);
       } catch (error) {
         console.error('Error loading workers map:', error);
       }
@@ -210,6 +219,18 @@ const PrimaryTasksTableView: React.FC = () => {
         } else {
           setTaskDefinitions([]);
         }
+
+        // Build ID->Name mapping
+        const nameMap = new Map<string, string>();
+        (taskDefs?.secondary_tasks?.definitions || []).forEach((d: any) => nameMap.set(String(d.id), String(d.name)));
+        (taskDefs?.main_tasks?.definitions || []).forEach((d: any) => { if (!nameMap.has(String(d.id))) nameMap.set(String(d.id), String(d.name)); });
+        // setQualificationNameById(nameMap); // This line is no longer needed as qualificationNameById is removed
+
+        // Build options directly from secondary definitions (stable ordering by name)
+        const secDefs = (taskDefs?.secondary_tasks?.definitions || []) as Array<{ id: string; name: string }>
+        const opts = secDefs.map((d) => ({ id: String(d.id), name: String(d.name) }))
+          .sort((a, b) => a.name.localeCompare(b.name, 'he'));
+        // setAllQualifications(opts); // This line is no longer needed as allQualifications is removed
       } catch (error) {
         console.error('Error loading task definitions:', error);
         setTaskDefinitions([]);
@@ -330,7 +351,6 @@ const PrimaryTasksTableView: React.FC = () => {
     console.log(`🔍 [handleSaveSchedule] Mode: ${currentScheduleId ? 'EDIT/UPDATE' : 'CREATE NEW'}`);
 
     setIsSaving(true);
-    setIsCalculatingClosing(true);
 
     try {
       // Parse dates from state
@@ -348,7 +368,7 @@ const PrimaryTasksTableView: React.FC = () => {
         departmentName,
         startDateObj,
         endDateObj,
-        includeAdmins,
+        includeAdmins, // Use includeAdmins state
         weeks,
         assignments,
         user.uid,
@@ -366,13 +386,35 @@ const PrimaryTasksTableView: React.FC = () => {
       console.log(`✅ [handleSaveSchedule] Schedule ID persisted: ${savedScheduleId}`);
       console.log(`✅ [handleSaveSchedule] Future saves will UPDATE this schedule, not create new ones`);
 
-      alert(currentScheduleId ? 'תורנות ותאריכי סגירה עודכנו בהצלחה!' : 'תורנות ותאריכי סגירה נשמרו בהצלחה!');
+      // Transient success message
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
     } catch (error) {
       console.error('Error saving schedule:', error);
       alert('שגיאה בשמירת תורנות');
     } finally {
       setIsSaving(false);
-      setIsCalculatingClosing(false);
+    }
+  };
+
+  // Handle delete schedule
+  const handleDeleteSchedule = async () => {
+    if (!departmentId || !scheduleId) return;
+
+    const confirmed = window.confirm('האם אתה בטוח שברצונך למחוק את התורנות? פעולה זו בלתי הפיכה.');
+    if (!confirmed) return;
+
+    try {
+      setIsDeleting(true);
+      await deleteSchedule(departmentId, scheduleId);
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
+      navigate(-1);
+    } catch (error) {
+      console.error('Error deleting schedule:', error);
+      alert('שגיאה במחיקת התורנות');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -388,7 +430,7 @@ const PrimaryTasksTableView: React.FC = () => {
         type: 'primary',
         startDate: new Date(),
         endDate: new Date(),
-        includeAdmins,
+        includeAdmins: includeAdmins, // Use includeAdmins state
         totalPeriods: weeks.length,
         periodDuration: 7,
         status: 'draft',
@@ -420,75 +462,102 @@ const PrimaryTasksTableView: React.FC = () => {
       
       <div className="relative z-10 min-h-screen py-8 pt-24">
         <div className="container mx-auto px-4">
-          {/* Back Button and Title */}
-          <div className="mb-6">
-            <Button
-              onClick={() => navigate(-1)}
-              className="mb-4 bg-slate-700 hover:bg-slate-600"
-            >
-              ← חזרה
-            </Button>
-            
-            <h1 className="text-4xl font-bold text-white mb-2">
-              {scheduleId ? 'עריכת תורנות ראשית' : 'יצירת תורנות ראשית'}
-            </h1>
+          {/* Top Bar: Back, Title, Actions */}
+          <div className="mb-6 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Button
+                  onClick={() => navigate(-1)}
+                  className="bg-slate-700 hover:bg-slate-600"
+                >
+                  ← חזרה
+                </Button>
+                <h1 className="text-3xl md:text-4xl font-bold text-white">
+                  {scheduleId ? 'עריכת תורנות ראשית' : 'יצירת תורנות ראשית'}
+                </h1>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => {
+                    const ok = window.confirm('לנקות את כל התאים? פעולה זו לא תשמור את השינויים עד ללחיצה על שמירה.');
+                    if (!ok) return;
+                    setAssignments(new Map());
+                    setHasUnsavedChanges(true);
+                  }}
+                  disabled={isSaving}
+                  variant="secondary"
+                  className="px-4"
+                >
+                  🧹 נקה טבלה
+                </Button>
+                <Button
+                  onClick={handleExportCSV}
+                  disabled={isSaving}
+                  variant="ghost"
+                  className="px-6"
+                >
+                  📥 ייצוא CSV
+                </Button>
+                <Button
+                  onClick={handleSaveSchedule}
+                  disabled={!hasUnsavedChanges || isSaving}
+                  variant={hasUnsavedChanges ? 'attention' : 'secondary'}
+                  className="px-8"
+                >
+                  {isSaving ? '⏳ שומר...' : (scheduleId ? '💾 עדכן תורנות' : '💾 שמור תורנות')}
+                </Button>
+              </div>
+            </div>
             <p className="text-white/70">
               שנה: {scheduleYear} | שבועות: {weeks.length}
               {scheduleId && ' | עריכה'}
             </p>
+            {/* Compact filter toggle */}
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-white/80 text-sm bg-white/10 border border-white/10 rounded-lg px-3 py-1.5">
+                <input
+                  type="checkbox"
+                  checked={filterClosingWorkersOnly}
+                  onChange={(e) => setFilterClosingWorkersOnly(e.target.checked)}
+                />
+                רק עובדים עם סגירות
+              </label>
+            </div>
+            {showSuccess && (
+              <div className="px-6 py-3 bg-green-600/20 border border-green-500/50 rounded-xl text-green-300 font-semibold w-full text-center">
+                ✅ נשמר בהצלחה
+              </div>
+            )}
           </div>
 
           {/* Table */}
           {weeks.length > 0 ? (
             <div className="space-y-6">
               <div className="bg-gradient-to-br from-blue-600/10 to-cyan-600/10 backdrop-blur-md rounded-2xl p-6 border border-white/10">
-                <PrimaryTaskTable
-                  weeks={weeks}
-                  workers={sortWorkersAlphabetically(workers)}
-                  admins={sortWorkersAlphabetically(admins)}
-                  includeAdmins={includeAdmins}
-                  assignments={assignments}
-                  taskDefinitions={taskDefinitions}
-                  onCellClick={handleCellClick}
-                  isReadOnly={false}
-                  year={scheduleYear}
-                />
+                {(() => {
+                  const filteredWorkers = filterClosingWorkersOnly
+                    ? sortWorkersAlphabetically(workers).filter((w) => {
+                        const m = workersMeta.get(w.workerId);
+                        return m && m.role === 'worker' && m.closingInterval !== 0;
+                      })
+                    : sortWorkersAlphabetically(workers);
+                  return (
+                    <PrimaryTaskTable
+                      weeks={weeks}
+                      workers={filteredWorkers}
+                      admins={sortWorkersAlphabetically(admins)}
+                      includeAdmins={includeAdmins}
+                      assignments={assignments}
+                      taskDefinitions={taskDefinitions}
+                      onCellClick={handleCellClick}
+                      isReadOnly={false}
+                      year={scheduleYear}
+                    />
+                  );
+                })()}
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex flex-col gap-4 items-center">
-                {/* Loading Indicator */}
-                {isSaving && (
-                  <div className="px-8 py-3 bg-blue-600/20 border border-blue-500/50 rounded-xl text-blue-300 font-semibold animate-pulse">
-                    {isCalculatingClosing ? '🧮 מחשב תאריכי סגירה מיטביים...' : '💾 שומר נתונים...'}
-                  </div>
-                )}
-                
-                {/* Buttons */}
-                <div className="flex flex-wrap gap-4 justify-center">
-                  {hasUnsavedChanges && (
-                    <Button
-                      onClick={handleSaveSchedule}
-                      disabled={isSaving}
-                      className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isSaving ? '⏳ שומר...' : scheduleId ? '💾 עדכן תורנות' : '💾 שמור תורנות'}
-                    </Button>
-                  )}
-                  {!hasUnsavedChanges && scheduleId && !isSaving && (
-                    <div className="px-8 py-3 bg-green-600/20 border border-green-500/50 rounded-xl text-green-300 font-semibold">
-                      ✅ כל השינויים נשמרו
-                    </div>
-                  )}
-                  <Button
-                    onClick={handleExportCSV}
-                    disabled={isSaving}
-                    className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    📥 ייצא לאקסל
-                  </Button>
-                </div>
-              </div>
+              {/* Bottom Actions: intentionally empty (moved export to top bar) */}
             </div>
           ) : (
             <div className="text-center py-16">

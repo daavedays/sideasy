@@ -154,6 +154,14 @@ const DevDash: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Dashboard Footer: quick links not in cards (developer) */}
+      <div className="mt-8 max-w-4xl mx-auto bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
+        <h2 className="text-xl font-bold text-white mb-4">קיצורי דרך</h2>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <button onClick={() => navigate('/developer/pending-approvals')} className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20">אישורים ממתינים</button>
+        </div>
+      </div>
     </div>
   );
 };

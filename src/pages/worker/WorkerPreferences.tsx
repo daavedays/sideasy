@@ -27,6 +27,8 @@ import SecondaryTaskTable, {
 } from '../../components/shared/SecondaryTaskTable';
 import Modal from '../../components/ui/Modal';
 import HebrewDatePicker from '../../components/ui/HebrewDatePicker';
+import { getTaskDefinitions } from '../../lib/firestore/taskDefinitions';
+import { getPrimarySchedules, getScheduleAssignments } from '../../lib/firestore/primarySchedules';
 
 
 interface Worker {
@@ -63,6 +65,8 @@ const WorkerPreferences: React.FC = () => {
   // User state
   const [currentWorker, setCurrentWorker] = useState<Worker | null>(null);
   const [departmentId, setDepartmentId] = useState<string>('');
+  const [disabledDateKeys, setDisabledDateKeys] = useState<Set<string>>(new Set());
+  const [disabledTooltips, setDisabledTooltips] = useState<Map<string, string>>(new Map());
 
   /**
    * Get today's date at midnight (for comparison purposes)
@@ -152,43 +156,26 @@ const WorkerPreferences: React.FC = () => {
       try {
         setLoading(true);
 
-        // Fetch secondary tasks
-        const tasksDoc = await getDoc(doc(db, 'departments', departmentId, 'taskDefinitions', 'config'));
-        if (tasksDoc.exists()) {
-          const data = tasksDoc.data();
-          const secondaryTasks = data.secondary_tasks?.definitions || [];
-          setTasks(secondaryTasks);
-          console.log('✅ Loaded secondary tasks:', secondaryTasks);
-        } else {
-          console.warn('⚠️ No task definitions found for department:', departmentId);
-        }
+        // Fetch secondary tasks via local cache helper
+        const defs = await getTaskDefinitions(departmentId);
+        const secondaryTasks = defs?.secondary_tasks?.definitions || [];
+        setTasks(secondaryTasks);
 
-        // Load worker summary (name) from users and qualifications from workersIndex/byWorker fallback
+        // Load worker summary (name) from users and qualifications from byWorker
         const userDocRef = doc(db, 'users', auth.currentUser!.uid);
         const userSnap = await getDoc(userDocRef);
         const firstName = userSnap.exists() ? (userSnap.data() as any).firstName : '';
         const lastName = userSnap.exists() ? (userSnap.data() as any).lastName : '';
 
-        // Load qualifications from workersIndex first
-        const indexRef = doc(db, 'departments', departmentId, 'workersIndex', 'index');
-        const indexSnap = await getDoc(indexRef);
+        // Read qualifications and preferences from byWorker
+        const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', auth.currentUser!.uid);
+        const byWorkerSnap = await getDoc(byWorkerRef);
         let qualifications: string[] = [];
-        let preferencesFromIndex: any[] = [];
-        if (indexSnap.exists()) {
-          const indexData = indexSnap.data() as any;
-          const entry = indexData.workers?.[auth.currentUser!.uid];
-          qualifications = entry?.qualifications || [];
-          preferencesFromIndex = entry?.preferences || [];
-        }
-
-        // Fallback: read qualifications from byWorker if missing
-        if (!qualifications || qualifications.length === 0) {
-          const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', auth.currentUser!.uid);
-          const byWorkerSnap = await getDoc(byWorkerRef);
-          if (byWorkerSnap.exists()) {
-            const bw = byWorkerSnap.data() as any;
-            qualifications = bw.qualifications || qualifications;
-          }
+        let preferencesFromByWorker: any[] = [];
+        if (byWorkerSnap.exists()) {
+          const bw = byWorkerSnap.data() as any;
+          qualifications = bw.qualifications || [];
+          preferencesFromByWorker = bw.preferences || [];
         }
 
         const worker: Worker = {
@@ -200,20 +187,9 @@ const WorkerPreferences: React.FC = () => {
         };
         setCurrentWorker(worker);
 
-        // Use preferences from index if available; fallback to byWorker
-        if (preferencesFromIndex && preferencesFromIndex.length > 0) {
-          setCurrentWorkerPreferences(preferencesFromIndex.map((p: any) => ({ date: p.date, taskId: p.taskId ?? null, status: p.status || (p.taskId ? 'preferred' : 'blocked') })));
-        } else {
-          const byWorkerRef = doc(db, 'departments', departmentId, 'workers', 'index', 'byWorker', auth.currentUser!.uid);
-          const byWorkerSnap = await getDoc(byWorkerRef);
-          if (byWorkerSnap.exists()) {
-            const bw = byWorkerSnap.data() as any;
-            const prefs = (bw.preferences || []).map((p: any) => ({ date: p.date, taskId: p.taskId ?? null, status: p.status || (p.taskId ? 'preferred' : 'blocked') }));
-            setCurrentWorkerPreferences(prefs);
-          } else {
-            setCurrentWorkerPreferences([]);
-          }
-        }
+        // Use preferences from byWorker
+        const prefs = (preferencesFromByWorker || []).map((p: any) => ({ date: p.date, taskId: p.taskId ?? null, status: p.status || (p.taskId ? 'preferred' : 'blocked') }));
+        setCurrentWorkerPreferences(prefs);
         console.log('✅ Loaded worker info, qualifications and preferences');
 
       } catch (error) {
@@ -225,6 +201,56 @@ const WorkerPreferences: React.FC = () => {
 
     fetchData();
   }, [departmentId]);
+
+  // Compute disabled dates due to primary tasks (with hover tooltip)
+  useEffect(() => {
+    if (!departmentId || !auth.currentUser || !startDate || !endDate) return;
+
+    const run = async () => {
+      try {
+        const schedules = await getPrimarySchedules(departmentId);
+        const toLocalNoon = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+        const fmt = (d: Date) => `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getFullYear()}`;
+        const keyOf = (d: Date) => fmt(d);
+
+        const rs = toLocalNoon(new Date(startDate));
+        const re = toLocalNoon(new Date(endDate));
+        const keys = new Set<string>();
+        const tips = new Map<string, string>();
+
+        for (const s of schedules) {
+          const sStart = toLocalNoon(s.startDate);
+          const sEnd = toLocalNoon(s.endDate);
+          const overlaps = !(re < sStart || rs > sEnd);
+          if (!overlaps) continue;
+          const map = await getScheduleAssignments(departmentId, s.scheduleId);
+          map.forEach((a) => {
+            if (a.workerId !== auth.currentUser!.uid) return;
+            // clip to range using local noon to avoid DST/UTC drift
+            const aStart = toLocalNoon(a.startDate);
+            const aEnd = toLocalNoon(a.endDate);
+            const d0 = aStart < rs ? rs : aStart;
+            const d1 = aEnd > re ? re : aEnd;
+            const startStr = fmt(aStart);
+            const endStr = fmt(aEnd);
+            for (let cur = new Date(d0); cur.getTime() <= d1.getTime(); cur.setDate(cur.getDate() + 1)) {
+              const k = keyOf(cur);
+              keys.add(k);
+              if (!tips.has(k)) tips.set(k, `לא ניתן לבחור: משימה ראשית ${startStr}–${endStr}`);
+            }
+          });
+        }
+        setDisabledDateKeys(keys);
+        setDisabledTooltips(tips);
+      } catch (e) {
+        console.warn('primaryTasks disable compute failed', e);
+        setDisabledDateKeys(new Set());
+        setDisabledTooltips(new Map());
+      }
+    };
+
+    run();
+  }, [departmentId, startDate, endDate]);
 
   /**
    * Build cell data from current worker's preferences only
@@ -481,9 +507,7 @@ const WorkerPreferences: React.FC = () => {
       // Get today's date for validation
       const today = getTodayMidnight();
 
-      // Source of truth is workersIndex; no need to read legacy preferences from worker doc
-
-      // Deprecated: existing preferences from workers doc are ignored; workersIndex is source of truth now
+      // Existing preferences from workers doc are ignored; byWorker is the source of truth
 
       // Collect and normalize preferences per date (support both whole-day block and task-specific)
       type DayAgg = { blocked: Set<string>; preferred: Set<string> };
@@ -664,6 +688,8 @@ const WorkerPreferences: React.FC = () => {
                 onCellClick={handleCellClick}
                 currentWorkerId={currentWorker?.workerId}
                 currentWorkerQualifications={currentWorker?.qualifications || []}
+                disabledDates={disabledDateKeys}
+                disabledTooltips={disabledTooltips}
               />
             </div>
           )}

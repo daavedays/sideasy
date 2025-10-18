@@ -30,6 +30,7 @@ import {
   getPastSchedulesDisplay,
   checkScheduleOverlap,
   getScheduleById,
+  deleteSchedule,
 } from '../../lib/firestore/primarySchedules';
 import { formatDateDDMMYYYY } from '../../lib/utils/dateUtils';
 
@@ -190,33 +191,62 @@ const PrimaryTasksDash: React.FC = () => {
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4">
                 {pastSchedules.map((schedule) => (
-                  <button
+                  <div
                     key={schedule.scheduleId}
-                    onClick={() => handleSelectSchedule(schedule.scheduleId)}
                     className={`
                       p-4 md:p-6 rounded-xl border-2 transition-all duration-300
-                      backdrop-blur-md text-right
+                      backdrop-blur-md text-right group relative
                       ${selectedScheduleId === schedule.scheduleId
                         ? 'bg-gradient-to-br from-orange-600/40 to-amber-600/40 border-orange-400/60 shadow-lg shadow-orange-500/30 scale-[1.02]'
                         : 'bg-white/10 border-white/20 hover:bg-white/15 hover:border-white/30 hover:shadow-lg hover:shadow-white/10'
                       }
                     `}
                   >
-                    <div className="flex items-start gap-3">
-                      <div className="text-2xl md:text-3xl">📋</div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-white font-bold text-sm md:text-base mb-1 truncate">
-                          {schedule.label.split(' - עודכן')[0]}
-                        </h3>
-                        <p className="text-white/70 text-xs md:text-sm">
-                          עודכן: {schedule.label.split('עודכן ')[1]}
-                        </p>
+                    {/* Delete tiny trash icon */}
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const confirmed = window.confirm('למחוק את התורנות? פעולה זו בלתי הפיכה.');
+                        if (!confirmed || !departmentId) return;
+                        try {
+                          await deleteSchedule(departmentId, schedule.scheduleId);
+                          // Remove from UI immediately
+                          setPastSchedules(prev => prev.filter(s => s.scheduleId !== schedule.scheduleId));
+                          if (selectedScheduleId === schedule.scheduleId) {
+                            setSelectedScheduleId(null);
+                            setSelectedSchedule(null);
+                          }
+                        } catch (err) {
+                          console.error('Error deleting schedule:', err);
+                          alert('שגיאה במחיקת התורנות');
+                        }
+                      }}
+                      title="מחק"
+                      className="absolute left-2 top-2 text-white/70 hover:text-white bg-red-600/60 hover:bg-red-600/80 rounded-md p-1 opacity-90"
+                    >
+                      🗑️
+                    </button>
+
+                    <button
+                      onClick={() => handleSelectSchedule(schedule.scheduleId)}
+                      className="w-full text-right"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="text-2xl md:text-3xl">📋</div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-white font-bold text-sm md:text-base mb-1 truncate">
+                            {schedule.label.split(' - עודכן')[0]}
+                          </h3>
+                          <p className="text-white/70 text-xs md:text-sm">
+                            עודכן: {schedule.label.split('עודכן ')[1]}
+                          </p>
+                        </div>
+                        {selectedScheduleId === schedule.scheduleId && (
+                          <div className="text-orange-400 text-xl">✓</div>
+                        )}
                       </div>
-                      {selectedScheduleId === schedule.scheduleId && (
-                        <div className="text-orange-400 text-xl">✓</div>
-                      )}
-                    </div>
-                  </button>
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>

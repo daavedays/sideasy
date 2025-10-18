@@ -14,7 +14,6 @@ import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../../config/firebase';
 import { UserData } from '../../lib/auth/authHelpers';
 import Background from '../../components/layout/Background';
-import Header from '../../components/layout/Header';
 
 interface DepartmentData {
   departmentId: string;
@@ -109,18 +108,39 @@ const WorkerDash: React.FC = () => {
   return (
     <div dir="rtl" className="relative flex-1 min-h-screen">
       <Background singleImage="/images/image_1.png" />
-      <Header />
       
       <div className="relative z-10 min-h-screen py-8 pt-24">
         <div className="container mx-auto px-4">
           {/* Welcome Header */}
           <div className="mb-8">
             <h1 className="text-5xl font-bold text-white drop-shadow-lg mb-2">
-              שלום, {userData?.firstName}!
+              שלום, {userData?.firstName}
             </h1>
             <p className="text-xl text-white/80">
               ברוך הבא למחלקת {departmentData?.name || userData?.departmentName}
             </p>
+          </div>
+
+          {/* Navigation Cards (moved above department info) */}
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold text-white mb-4">מה תרצה לעשות?</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+              {navigationCards.map((card, index) => (
+                <button
+                  key={index}
+                  onClick={card.onClick}
+                  className="relative bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 hover:bg-white/15 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-right group"
+                >
+                  {/* Icon */}
+                  <div className="text-5xl md:text-6xl mb-4 group-hover:scale-110 transition-transform">
+                    {card.icon}
+                  </div>
+                  <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{card.title}</h3>
+                  <p className="text-sm md:text-base text-white/70">{card.description}</p>
+                  <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${card.color} opacity-0 group-hover:opacity-20 transition-opacity pointer-events-none`} />
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Department Info Card */}
@@ -141,38 +161,6 @@ const WorkerDash: React.FC = () => {
                   {departmentData?.workerCount || 0}
                 </p>
               </div>
-            </div>
-          </div>
-
-          {/* Navigation Cards */}
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold text-white mb-4">מה תרצה לעשות?</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-              {navigationCards.map((card, index) => (
-                <button
-                  key={index}
-                  onClick={card.onClick}
-                  className="relative bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 hover:bg-white/15 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-right group"
-                >
-                  {/* Icon */}
-                  <div className="text-5xl md:text-6xl mb-4 group-hover:scale-110 transition-transform">
-                    {card.icon}
-                  </div>
-
-                  {/* Title */}
-                  <h3 className="text-xl md:text-2xl font-bold text-white mb-2">
-                    {card.title}
-                  </h3>
-
-                  {/* Description */}
-                  <p className="text-sm md:text-base text-white/70">
-                    {card.description}
-                  </p>
-
-                  {/* Gradient Border */}
-                  <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${card.color} opacity-0 group-hover:opacity-20 transition-opacity pointer-events-none`} />
-                </button>
-              ))}
             </div>
           </div>
 
@@ -197,6 +185,14 @@ const WorkerDash: React.FC = () => {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Dashboard Footer: quick links not in cards (worker) */}
+      <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 md:p-8 border border-white/20 mb-8">
+        <h2 className="text-xl font-bold text-white mb-4">קיצורי דרך</h2>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <button onClick={() => navigate('/worker/preferences')} className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white border border-white/20">העדפות עבודה</button>
         </div>
       </div>
     </div>
